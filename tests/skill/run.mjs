@@ -125,6 +125,38 @@ try {
     gaReport.manual.length === 0,
   );
 
+  // A2. real-v2-generator-app-js（JS module.exports 静态配置，自动迁移）
+  console.log(
+    '== A2. real-v2-generator-app-js (JS module.exports 静态配置) ==',
+  );
+  const gj = prepare('real-v2-generator-app-js');
+  check('[provenance] 含 PROVENANCE.md', gj.has('PROVENANCE.md'));
+  const gjCfg = gj.read('modern.config.js');
+  check(
+    '[auto] module.exports: appTools({ bundler }) → appTools()',
+    /appTools\(\)/.test(gjCfg) && !/bundler/.test(gjCfg),
+  );
+  check(
+    '[auto] module.exports 顶层 runtime 块已移除',
+    !/\bruntime\s*:/.test(gjCfg),
+  );
+  check(
+    '[auto] runtime 合并进 src/modern.runtime.js',
+    gj.has('src/modern.runtime.js') &&
+      /defineRuntimeConfig\(\s*\{[\s\S]*router:\s*true/.test(
+        gj.read('src/modern.runtime.js'),
+      ),
+  );
+  check(
+    '[auto] 固定 2.x 依赖升 3.0.0',
+    JSON.parse(gj.read('package.json')).dependencies['@modern-js/runtime'] ===
+      '3.0.0',
+  );
+  check(
+    '[auto] 未误报「函数式/动态配置」manual',
+    !/函数式\/动态/.test(gj.report().manual.join('\n')),
+  );
+
   // ============================================================
   // B. origin/v2 integration 真实形态（applyBaseConfig 包装）
   //    验证：结构性迁移（runtime/plugins/appTools）进 manual、不假成功；
@@ -154,9 +186,17 @@ try {
     /结构迁移未完成/.test(bhManual) && /applyBaseConfig/.test(bhManual),
   );
   check(
-    '[auto] 依赖仍升级（文件级安全改写照常）',
+    '[provenance] workspace:* 依赖保留（未强升固定版本）',
     JSON.parse(bh.read('package.json')).dependencies['@modern-js/runtime'] ===
-      '3.0.0',
+      'workspace:*',
+  );
+  check(
+    '[manual] workspace 协议依赖进 manual（随 monorepo 升级）',
+    /workspace\/link\/catalog 协议依赖/.test(bhManual),
+  );
+  check(
+    '[manual] React18 + ssr.mode:stream 不误报 SSR 人工项',
+    !/React17|ssr\.mode 设回/.test(bhManual),
   );
 
   // B2. real-v2-server-config（applyBaseConfig + server/index.ts hook + modernConfig.runtime）
@@ -280,8 +320,9 @@ try {
     pkg.dependencies['@modern-js/server-runtime'] === '3.0.0',
   );
   check(
-    'config 加入 bffPlugin()',
-    /bffPlugin\(\)/.test(cfg) && cfg.includes('@modern-js/plugin-bff'),
+    'config 加入 bffPlugin()（顺序 appTools 在前、无双逗号）',
+    /plugins\s*:\s*\[\s*appTools\(\)\s*,\s*bffPlugin\(\)\s*\]/.test(cfg) &&
+      !/,\s*,/.test(cfg),
   );
   const manualA = a.report().manual.join('\n');
   check('人工清单含 App.init', /App\.init/.test(manualA));
@@ -514,6 +555,102 @@ try {
   check(
     '冲突进人工清单（需人工合并）',
     /人工合并/.test(rcf.report().manual.join('\n')),
+  );
+
+  // C16. blocker：BFF 插入已有 plugins 时顺序 = [appTools(), bffPlugin()]（append，不前插）
+  console.log('== C16. v2-edge-bff-existing-plugins (append order) ==');
+  const ep = prepare('v2-edge-bff-existing-plugins');
+  const cfgEp = ep.read('modern.config.ts');
+  check(
+    'plugins: [appTools(), bffPlugin()]（bffPlugin 追加到末尾，不在 appTools 之前）',
+    /plugins\s*:\s*\[\s*appTools\(\)\s*,\s*bffPlugin\(\)\s*\]/.test(cfgEp),
+  );
+  check(
+    '无前插（不是 [bffPlugin(), appTools()]）',
+    !/\[\s*bffPlugin\(\)\s*,\s*appTools/.test(cfgEp),
+  );
+
+  // C17. JS/静态：defineConfig<'rspack'>({}) 泛型写法走主路径，不误报动态
+  console.log(
+    '== C17. v2-edge-defineconfig-generic (defineConfig<...>({})) ==',
+  );
+  const dg = prepare('v2-edge-defineconfig-generic');
+  const cfgDg = dg.read('modern.config.ts');
+  check(
+    '泛型 defineConfig：appTools({ bundler }) → appTools()',
+    /appTools\(\)/.test(cfgDg) && !/appTools\(\s*\{/.test(cfgDg),
+  );
+  check('泛型 defineConfig：runtime 块已移除', !/\bruntime\s*:/.test(cfgDg));
+  check(
+    '泛型 defineConfig：runtime 合并进新建 src/modern.runtime.ts',
+    dg.has('src/modern.runtime.ts') &&
+      /router:\s*true/.test(dg.read('src/modern.runtime.ts')),
+  );
+  check(
+    '泛型 defineConfig：未误报「函数式/动态」',
+    !/函数式\/动态/.test(dg.report().manual.join('\n')),
+  );
+
+  // ============================================================
+  // D. 负向：v3-workspace-app —— workspace 协议 + 无 v2 信号 → 阻断，不误迁
+  // ============================================================
+  console.log('== D. v3-workspace-app (workspace + 无 v2 信号 → 阻断) ==');
+  const dWork = path.join(os.tmpdir(), 'mj-neg-');
+  const negDir = fs.mkdtempSync(dWork);
+  tmpDirs.push(negDir);
+  copyDir(path.join(HERE, 'fixtures', 'v3-workspace-app'), negDir);
+  // scan 必须非 0 阻断
+  let scanBlocked = false;
+  try {
+    execFileSync('node', [path.join(SCRIPTS, 'scan-project.mjs'), negDir], {
+      encoding: 'utf8',
+      stdio: 'pipe',
+    });
+  } catch {
+    scanBlocked = true;
+  }
+  check('[blocking] scan-project 非 0 退出（ambiguous 阻断）', scanBlocked);
+  check(
+    '[blocking] scan 未写 context.json',
+    !fs.existsSync(
+      path.join(negDir, '.agents/runs/modernjs-migrate/context.json'),
+    ),
+  );
+  // migrate 二次保护：非 0 退出且不改文件
+  const cfgBefore = fs.readFileSync(
+    path.join(negDir, 'modern.config.ts'),
+    'utf8',
+  );
+  const pkgBefore = fs.readFileSync(path.join(negDir, 'package.json'), 'utf8');
+  let migrateBlocked = false;
+  try {
+    execFileSync(
+      'node',
+      [path.join(SCRIPTS, 'migrate.mjs'), negDir, '--to=3.0.0'],
+      {
+        encoding: 'utf8',
+        stdio: 'pipe',
+      },
+    );
+  } catch {
+    migrateBlocked = true;
+  }
+  check('[blocking] migrate 非 0 退出（二次保护）', migrateBlocked);
+  check(
+    '[blocking] migrate 未改写 modern.config.ts',
+    fs.readFileSync(path.join(negDir, 'modern.config.ts'), 'utf8') ===
+      cfgBefore,
+  );
+  check(
+    '[blocking] migrate 保留 workspace:* 未升固定版本',
+    fs.readFileSync(path.join(negDir, 'package.json'), 'utf8') === pkgBefore &&
+      pkgBefore.includes('workspace:*'),
+  );
+  check(
+    '[blocking] migrate 未产生 report.json',
+    !fs.existsSync(
+      path.join(negDir, '.agents/runs/modernjs-migrate/report.json'),
+    ),
   );
 
   console.log(`\n结果：${pass} 通过 / ${fail} 失败`);

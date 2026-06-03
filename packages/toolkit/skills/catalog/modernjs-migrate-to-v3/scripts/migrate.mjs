@@ -35,6 +35,11 @@ const note = (list, msg) => list.push(msg);
 const readText = f => fs.readFileSync(f, 'utf8');
 const exists = (...p) => fs.existsSync(path.join(...p));
 
+// monorepo / 非语义化版本协议：随 monorepo 整体升级解析，不该被改写成固定版本号
+const WORKSPACE_PROTO = /^(workspace:|link:|catalog:|file:|portal:|npm:|\*$)/;
+const isWorkspaceProto = v =>
+  v != null && WORKSPACE_PROTO.test(String(v).trim());
+
 function collectSources(dir, files = []) {
   if (!fs.existsSync(dir)) return files;
   for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
@@ -81,30 +86,83 @@ function extractBalanced(text, startIdx) {
   return null;
 }
 
+// 定位顶层配置对象字面量的起始 `{` 下标，兼容：
+//   defineConfig({  /  defineConfig<'rspack'>({  /  export default {  /  module.exports = {
+// 函数式/动态（defineConfig(() => ({...}))）返回 -1，交调用方走 manual。
+function locateConfigObjStart(code) {
+  const dcObj = code.match(/defineConfig\s*(?:<[^>]*>)?\s*\(\s*\{/);
+  if (dcObj) return dcObj.index + dcObj[0].length - 1;
+  const ed = code.match(/export\s+default\s*\{/);
+  if (ed) return ed.index + ed[0].length - 1;
+  const me = code.match(/module\.exports\s*=\s*\{/);
+  if (me) return me.index + me[0].length - 1;
+  return -1;
+}
+
+// 把 bffPlugin() **追加到** 顶层 plugins 数组末尾（保留原插件顺序，避免插到 appTools 之前）
+function appendToPluginsArray(prop, call) {
+  const arrStart = prop.indexOf('[');
+  if (arrStart === -1) return null;
+  let depth = 0;
+  let arrEnd = -1;
+  for (let i = arrStart; i < prop.length; i++) {
+    if (prop[i] === '[') depth += 1;
+    else if (prop[i] === ']') {
+      depth -= 1;
+      if (depth === 0) {
+        arrEnd = i;
+        break;
+      }
+    }
+  }
+  if (arrEnd === -1) return null;
+  // 去掉尾随逗号（如 tailwind 移除后残留的 `appTools(), `），避免 append 后出现双逗号
+  const inner = prop
+    .slice(arrStart + 1, arrEnd)
+    .trim()
+    .replace(/,\s*$/, '');
+  const newInner = inner ? `${inner}, ${call}` : call;
+  return `${prop.slice(0, arrStart)}[${newInner}]${prop.slice(arrEnd + 1)}`;
+}
+
 // ---- 1) 依赖 ----
 function migrateDeps(dir, toVersion) {
   const file = path.join(dir, 'package.json');
   const pkg = JSON.parse(readText(file));
-  let touched = false;
+  let bumped = false;
+  let tailwindRemoved = false;
+  const skippedWorkspace = new Set();
   for (const field of ['dependencies', 'devDependencies', 'peerDependencies']) {
     const deps = pkg[field];
     if (!deps) continue;
     if (deps['@modern-js/plugin-tailwindcss']) {
       delete deps['@modern-js/plugin-tailwindcss'];
-      touched = true;
+      tailwindRemoved = true;
     }
     for (const name of Object.keys(deps)) {
-      if (name.startsWith('@modern-js/') && deps[name] !== toVersion) {
+      if (!name.startsWith('@modern-js/')) continue;
+      // workspace/link/catalog 协议：随 monorepo 升级，不改成固定版本（否则破坏 workspace 链接）
+      if (isWorkspaceProto(deps[name])) {
+        skippedWorkspace.add(name);
+        continue;
+      }
+      if (deps[name] !== toVersion) {
         deps[name] = toVersion;
-        touched = true;
+        bumped = true;
       }
     }
   }
-  if (touched) {
+  if (bumped || tailwindRemoved) {
     fs.writeFileSync(file, `${JSON.stringify(pkg, null, 2)}\n`);
+    const parts = [];
+    if (bumped) parts.push(`@modern-js/* 升到 ${toVersion}`);
+    if (tailwindRemoved) parts.push('移除 @modern-js/plugin-tailwindcss');
+    note(changed, `依赖：${parts.join('，')}`);
+  }
+  if (skippedWorkspace.size) {
     note(
-      changed,
-      `依赖：@modern-js/* 统一升到 ${toVersion}，移除 plugin-tailwindcss`,
+      manual,
+      `workspace/link/catalog 协议依赖未改版本（随 monorepo 整体升级到 v3）：${[...skippedWorkspace].join(', ')}`,
     );
   }
 }
@@ -221,21 +279,20 @@ function addBffPlugin(dir, flags) {
       note(changed, '配置：在 @modern-js/app-tools import 上补 appTools');
     }
   }
-  // 只改 defineConfig 的**顶层** plugins（避免误命中 tools.postcss.postcssOptions.plugins 等嵌套）
-  const dc = code.match(/defineConfig\(\s*\{/);
-  if (!dc) {
+  // 只改顶层 plugins（避免误命中 tools.postcss.postcssOptions.plugins 等嵌套）
+  const objStart = locateConfigObjStart(code);
+  if (objStart === -1) {
     note(
       manual,
-      '无法定位 defineConfig({...})，请手动把 bffPlugin() 加进顶层 plugins',
+      '无法定位顶层配置对象（defineConfig/module.exports/export default），请手动把 bffPlugin() 加进顶层 plugins',
     );
     return;
   }
-  const objStart = dc.index + dc[0].length - 1;
   const obj = extractBalanced(code, objStart);
   if (!obj) {
     note(
       manual,
-      'defineConfig 解析失败，请手动把 bffPlugin() 加进顶层 plugins',
+      'modern.config 解析失败，请手动把 bffPlugin() 加进顶层 plugins',
     );
     return;
   }
@@ -243,11 +300,16 @@ function addBffPlugin(dir, flags) {
   const pluginsIdx = props.findIndex(p => /^plugins\s*:/.test(p));
   let newProps;
   if (pluginsIdx !== -1) {
-    newProps = props.map((p, i) =>
-      i === pluginsIdx
-        ? p.replace(/plugins\s*:\s*\[/, `plugins: [${localName}(), `)
-        : p,
-    );
+    // 追加到 plugins 末尾（保留原顺序，得到 [..., bffPlugin()] 而非前插）
+    const appended = appendToPluginsArray(props[pluginsIdx], `${localName}()`);
+    if (!appended) {
+      note(
+        manual,
+        'modern.config 顶层 plugins 解析失败，请手动把 bffPlugin() 加进 plugins',
+      );
+      return;
+    }
+    newProps = props.map((p, i) => (i === pluginsIdx ? appended : p));
     if (!/\bappTools\s*\(/.test(newProps[pluginsIdx])) {
       note(
         manual,
@@ -452,14 +514,8 @@ function migrateRuntimeBlock(dir) {
   }
 
   // (b) 顶层 runtime 块 → modern.runtime.ts
-  let objStart = -1;
-  const dcObj = code.match(/defineConfig\(\s*\{/);
-  if (dcObj) {
-    objStart = dcObj.index + dcObj[0].length - 1;
-  } else {
-    const ed = code.match(/export\s+default\s*\{/);
-    if (ed) objStart = ed.index + ed[0].length - 1;
-  }
+  // locateConfigObjStart 兼容 defineConfig({ / defineConfig<...>({ / export default { / module.exports = {
+  const objStart = locateConfigObjStart(code);
   if (objStart === -1) {
     // 函数式 / 动态 defineConfig(() => ({...}))：runtime 无法安全静态搬运
     if (/\bruntime\s*:/.test(code)) {
@@ -750,11 +806,12 @@ function writePostcss(dir, hadTailwind) {
 }
 
 // ---- 8) 其余人工项 ----
-function flagManual(dir) {
+function flagManual(dir, reactMajor) {
   const configFile = [
     'modern.config.ts',
     'modern.config.js',
     'modern.config.mjs',
+    'modern.config.cjs',
   ].find(f => exists(dir, f));
   const configText = configFile ? readText(path.join(dir, configFile)) : '';
   if (exists(dir, 'server', 'index.ts') || exists(dir, 'server', 'index.js')) {
@@ -766,11 +823,27 @@ function flagManual(dir) {
   if (/appIcon\s*:\s*['"]/.test(configText)) {
     note(manual, 'html.appIcon 字符串 → 对象 { icons:[{src,size}] }');
   }
+  // SSR：v3 默认 stream。只在「显式 string」「React<18 启用 SSR」「模式/版本无法判断」时提示；
+  // mode:'stream' + React18+ 是 v3 默认安全形态，不报（避免污染报告边界）
   if (/\bssr\b/.test(configText)) {
-    note(
-      manual,
-      'SSR mode 默认 string→stream：React17 项目需手动设回 "string"',
-    );
+    const hasStream = /mode\s*:\s*['"]stream['"]/.test(configText);
+    const hasString = /mode\s*:\s*['"]string['"]/.test(configText);
+    if (hasString) {
+      note(
+        manual,
+        'server.ssr.mode 显式为 "string"：确认 v3 下是否仍需 string 渲染（默认已改 stream）',
+      );
+    } else if (!hasStream && reactMajor > 0 && reactMajor < 18) {
+      note(
+        manual,
+        'SSR + React<18：v3 默认 stream 渲染，React17 需手动把 server.ssr.mode 设回 "string"',
+      );
+    } else if (!hasStream && reactMajor === 0) {
+      note(
+        manual,
+        'SSR 已启用但无法判断 React 版本/渲染模式：确认 server.ssr.mode（v3 默认 stream）',
+      );
+    }
   }
   if (/\bwebpack\b|webpackChain/.test(configText)) {
     note(manual, 'webpack 自定义配置 → 确认 Rspack 兼容');
@@ -785,6 +858,58 @@ function flagManual(dir) {
   }
 }
 
+// v2-only 结构信号（v3 不再有）：用于在 workspace 协议下区分 v2 待迁移 vs 已是 v3。
+// 明确排除 routes / modern.runtime.ts / appTools()（v3 也有，不算信号）。
+function detectV2Signals(dir, pkg) {
+  const configFile = [
+    'modern.config.ts',
+    'modern.config.js',
+    'modern.config.mjs',
+    'modern.config.cjs',
+  ].find(f => exists(dir, f));
+  const configText = configFile ? readText(path.join(dir, configFile)) : '';
+  const deps = {
+    ...pkg.dependencies,
+    ...pkg.devDependencies,
+    ...pkg.peerDependencies,
+  };
+  const files = collectSources(path.join(dir, 'src'))
+    .concat(collectSources(path.join(dir, 'server')))
+    .concat(collectSources(path.join(dir, 'api')));
+  const anyFile = re => files.some(f => re.test(readText(f)));
+  const signals = [];
+  if (/\bruntime\s*:/.test(configText))
+    signals.push('modern.config 顶层 runtime');
+  if (/appTools\s*\(\s*\{[^)]*\bbundler\b/.test(configText)) {
+    signals.push('appTools({ bundler })');
+  }
+  if (/\bapplyBaseConfig\s*\(/.test(configText))
+    signals.push('applyBaseConfig');
+  if (
+    deps['@modern-js/plugin-tailwindcss'] ||
+    /tailwindcssPlugin|plugin-tailwindcss/.test(configText)
+  ) {
+    signals.push('plugin-tailwindcss');
+  }
+  if (anyFile(/@modern-js\/runtime\/bff\b/))
+    signals.push('@modern-js/runtime/bff import');
+  if (anyFile(/@modern-js\/runtime\/server\b/)) {
+    signals.push('@modern-js/runtime/server import');
+  }
+  if (anyFile(/\bApp\.config\b/)) signals.push('App.config');
+  if (anyFile(/\bApp\.init\b/)) signals.push('App.init');
+  if (anyFile(/export\s+const\s+(config|init)\b/))
+    signals.push('layout config/init');
+  if (anyFile(/\buseRuntimeContext\b/)) signals.push('useRuntimeContext');
+  if (exists(dir, 'src', 'pages') && !exists(dir, 'src', 'routes')) {
+    signals.push('src/pages');
+  }
+  if (exists(dir, 'server', 'index.ts') || exists(dir, 'server', 'index.js')) {
+    signals.push('自定义 server (server/index)');
+  }
+  return signals;
+}
+
 function main() {
   const args = process.argv.slice(2);
   const dir = path.resolve(args.find(a => !a.startsWith('--')) || '.');
@@ -797,13 +922,30 @@ function main() {
     process.exit(1);
   }
 
+  const pkg = JSON.parse(readText(path.join(dir, 'package.json')));
   const reactMajor =
-    Number(
-      String(
-        JSON.parse(readText(path.join(dir, 'package.json'))).dependencies
-          ?.react ?? '',
-      ).match(/(\d+)/)?.[1],
-    ) || 0;
+    Number(String(pkg.dependencies?.react ?? '').match(/(\d+)/)?.[1]) || 0;
+
+  // 二次保护（不依赖 scan）：workspace/monorepo 协议 + 无任何 v2-only 信号 → ambiguous，
+  // 可能已是 v3 workspace 应用，拒绝迁移、不改任何文件
+  const appToolsVer =
+    pkg.devDependencies?.['@modern-js/app-tools'] ??
+    pkg.dependencies?.['@modern-js/app-tools'] ??
+    null;
+  if (isWorkspaceProto(appToolsVer)) {
+    const signals = detectV2Signals(dir, pkg);
+    if (!signals.length) {
+      console.error(
+        [
+          '⛔ 迁移已中止（未改写任何文件）：',
+          `检测到 @modern-js/app-tools 使用 workspace/monorepo 协议（${appToolsVer}）但无任何 v2-only 信号，`,
+          '无法确认这是待迁移的 v2 项目——很可能已经是 v3 workspace 应用。',
+          '请人工确认项目确为 v2 后再迁移（先跑 scan-project.mjs 核对）。',
+        ].join('\n'),
+      );
+      process.exit(1);
+    }
+  }
 
   migrateDeps(dir, toVersion);
   const files = collectSources(path.join(dir, 'src'))
@@ -826,7 +968,7 @@ function main() {
   );
   migratePagesToRoutes(dir);
   writePostcss(dir, hadTailwind);
-  flagManual(dir);
+  flagManual(dir, reactMajor);
 
   const report = { projectDir: dir, toVersion, changed, manual };
   const outDir = path.join(dir, '.agents', 'runs', 'modernjs-migrate');

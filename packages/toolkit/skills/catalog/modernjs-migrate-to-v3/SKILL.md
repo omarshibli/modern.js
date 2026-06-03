@@ -34,7 +34,9 @@ git -C <projectDir> status --porcelain
 node scripts/scan-project.mjs <projectDir>
 ```
 
-产出 `<projectDir>/.agents/runs/modernjs-migrate/context.json`：判定 v2/v3、Node 版本、入口类型、命中的 `features`。脚本失败（非 v2/v3、Node 过低）时直接停止并展示原因。`migrationState=v3` 按续迁移处理。
+产出 `<projectDir>/.agents/runs/modernjs-migrate/context.json`：判定 v2/v3、Node 版本、入口类型、命中的 `features` 与 `v2Signals`。脚本失败（非 v2/v3、Node 过低）时直接停止并展示原因。`migrationState=v3` 按续迁移处理。
+
+> **monorepo / workspace 项目**：`@modern-js/app-tools` 用 `workspace:*` / `link:` / `catalog:` 等协议时无法从版本号判定大版本。此时只有命中**v2-only 结构信号**（顶层 `runtime`、`appTools({ bundler })`、`applyBaseConfig`、`@modern-js/plugin-tailwindcss`、`@modern-js/runtime/bff|server` import、`App.config/init`、`src/pages`、自定义 `server/index`）才判为 v2；**无任何信号则视为 ambiguous 并阻断**（非 0 退出、不写 context），避免把已是 v3 的 workspace 应用误迁。`routes` / `src/modern.runtime.ts` / `appTools()` 不算 v2 信号（v3 也有）。
 
 ### 步骤 2：执行可安全自动化的改写
 
@@ -44,7 +46,9 @@ node scripts/migrate.mjs <projectDir> --to=<目标版本>
 
 自动完成（依据 `guides/upgrade/*`）：
 
-- **依赖**：`@modern-js/*` 统一升到目标版本（固定版本号）；移除 `@modern-js/plugin-tailwindcss`
+- **前置自保护**：`workspace`/`link`/`catalog` 协议 + 无任何 v2-only 信号 → 直接中止（exit 1，不改任何文件），不依赖 scan
+- **依赖**：固定版本（`^2.x`）的 `@modern-js/*` 升到目标版本；**`workspace`/`link`/`catalog` 协议依赖保留不改**（随 monorepo 整体升级，进人工清单）；移除 `@modern-js/plugin-tailwindcss`
+- **配置入口形态**：`defineConfig({})` / `defineConfig<'rspack'>({})` / `export default {}` / `module.exports = {}`（JS 静态配置）均按主路径处理；函数式/动态 `defineConfig(() => ({}))` 含 runtime 时进人工清单
 - **import 路径**：`@modern-js/runtime/bff`→`@modern-js/plugin-bff/runtime`、`@modern-js/runtime/server`→`@modern-js/server-runtime`，并**补充对应依赖**（`@modern-js/plugin-bff` / `@modern-js/server-runtime`，与 app-tools 同版本）；命中 BFF 时给 `modern.config` 加 `bffPlugin()`（必要时在 `@modern-js/app-tools` import 上补 `appTools`；无法补则进人工清单，不写半成品）
 - **配置**：`appTools({ bundler })`→`appTools()`（v3 默认 Rspack，只删 `bundler` 参数）；`modern.config` 顶层 `runtime` 块 → 合并进 `src/modern.runtime.ts`（v3 不再支持在 config 配 runtime；只合并进**空的** `defineRuntimeConfig({})`，非空/函数式进人工清单不覆盖）；`dev.port`→`server.port`（只移顶层 `port`，保留 dev 块其余字段；嵌套如 `dev.client.port` 不动）；移除 tailwind 插件并写 `postcss.config.cjs`
 - **入口**：`src/index.*`→`src/entry.*`（bootstrap 函数改写为 `createRoot()`/`render()`）；`App.config` 抽取到 `src/modern.runtime.ts`（**已存在则不覆盖**，进人工清单）

@@ -179,20 +179,56 @@ function main() {
       exists(projectDir, 'server', 'index.js'),
   };
 
+  // v2-only 结构信号（v3 不再有）。明确排除 routes / modern.runtime.ts / appTools()（v3 也有）
+  const arr = v => (Array.isArray(v) ? v.length > 0 : Boolean(v));
+  const v2OnlySignals = [];
+  if (/\bruntime\s*:/.test(configText)) v2OnlySignals.push('config.runtime');
+  if (/appTools\s*\(\s*\{[^)]*\bbundler\b/.test(configText)) {
+    v2OnlySignals.push('appTools({ bundler })');
+  }
+  if (/\bapplyBaseConfig\s*\(/.test(configText))
+    v2OnlySignals.push('applyBaseConfig');
+  if (
+    deps['@modern-js/plugin-tailwindcss'] ||
+    arr(features['tailwind-plugin'])
+  ) {
+    v2OnlySignals.push('plugin-tailwindcss');
+  }
+  if (arr(features['import-bff'])) v2OnlySignals.push('runtime/bff import');
+  if (arr(features['import-server']))
+    v2OnlySignals.push('runtime/server import');
+  if (arr(features['app-config'])) v2OnlySignals.push('App.config');
+  if (arr(features['app-init'])) v2OnlySignals.push('App.init');
+  if (arr(features['layout-config-init']))
+    v2OnlySignals.push('layout config/init');
+  if (arr(features['use-runtime-context']))
+    v2OnlySignals.push('useRuntimeContext');
+  if (arr(features['pages-to-routes'])) v2OnlySignals.push('src/pages');
+  if (arr(features['custom-server'])) v2OnlySignals.push('custom server');
+
+  // workspace/monorepo 协议 + 无任何 v2-only 信号 → ambiguous，阻断（可能已是 v3 workspace 应用）
+  if (
+    isWorkspaceVersion &&
+    appToolsMajor == null &&
+    v2OnlySignals.length === 0
+  ) {
+    fail([
+      `检测到 @modern-js/app-tools = ${appToolsVersion}（workspace/monorepo 协议）但无任何 v2-only 信号：`,
+      '无法判定为待迁移的 v2 项目（很可能已经是 v3 workspace 应用）。',
+      '请人工确认项目确为 v2 后再迁移，不要直接跑 migrate.mjs。',
+    ]);
+  }
+
   const modernDeps = Object.fromEntries(
     Object.entries(deps).filter(([n]) => n.startsWith('@modern-js/')),
   );
 
   const context = {
     projectDir,
-    // 无法解析主版本（workspace 协议）时按 v2 待迁移处理（迁移最安全的默认）
-    migrationState:
-      appToolsMajor === 3
-        ? 'v3'
-        : appToolsMajor === 2 || isWorkspaceVersion
-          ? 'v2'
-          : 'v2',
+    // major=3→v3；major=2→v2；workspace 协议命中 v2 信号→v2（无信号已在上面阻断）
+    migrationState: appToolsMajor === 3 ? 'v3' : 'v2',
     appToolsVersion,
+    v2Signals: v2OnlySignals,
     configFile,
     entryType,
     node: process.version,
