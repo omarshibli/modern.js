@@ -5,13 +5,15 @@
 // 自动改写（依据 guides/upgrade/*）：
 //   - 依赖：@modern-js/* 统一升到目标版本；移除 @modern-js/plugin-tailwindcss
 //   - import 路径：runtime/bff→plugin-bff/runtime、runtime/server→server-runtime
-//   - 配置：dev.port→server.port；移除 tailwind 插件 import/调用 + 写 postcss.config.cjs
+//   - 配置：appTools({ bundler })→appTools()；顶层 runtime 块→合并进空的 src/modern.runtime.ts；
+//           dev.port→server.port；移除 tailwind 插件 import/调用 + 写 postcss.config.cjs
 //   - 入口：src/index.* → src/entry.*（bootstrap 函数改写为 createRoot/render）
 //   - App.config → src/modern.runtime.ts 的 defineRuntimeConfig
-//   - useRuntimeContext() → use(RuntimeContext)
+//   - useRuntimeContext() → use/useContext(RuntimeContext)（保留 react default import；alias 进人工）
 //   - src/pages → src/routes（无 routes 时）
 // 人工清单（语义复杂，不自动）：App.init / layout init、自定义 server、html.appIcon、
-//   server.ssr.mode、webpack 自定义配置。
+//   server.ssr.mode、webpack 自定义配置、modernConfig.runtime、非空/函数式 runtime、
+//   applyBaseConfig(...) 包装下的结构性迁移（integration helper，标注「结构迁移未完成」）。
 
 import fs from 'node:fs';
 import path from 'node:path';
@@ -168,6 +170,10 @@ function addBffPlugin(dir, flags) {
   const file = path.join(dir, configFile);
   let code = readText(file);
 
+  // applyBaseConfig 包装的配置（integration helper / 非标准用户配置）：结构性改写交人工，
+  // 统一由 migrateRuntimeBlock 记 manual，这里直接跳过，避免半自动改坏顶层 plugins
+  if (/\bapplyBaseConfig\s*\(/.test(code)) return;
+
   // 识别已有 @modern-js/plugin-bff import（单/双引号皆可），取 bffPlugin 的本地名（含 alias）
   const importMatch = code.match(
     /import\s*\{([^}]*)\}\s*from\s*['"]@modern-js\/plugin-bff['"]/,
@@ -194,6 +200,27 @@ function addBffPlugin(dir, flags) {
       `$1import { bffPlugin } from '@modern-js/plugin-bff';\n`,
     );
   }
+  // v3 顶层 plugins 必含 appTools()；若未 import 但能在 @modern-js/app-tools import 上补则补，
+  // 补不了（无 app-tools import）就进 manual 且不写半成品 plugins
+  let hasAppTools = /\bappTools\b/.test(code);
+  if (!hasAppTools) {
+    const appToolsImp = code.match(
+      /import\s*\{([^}]*)\}\s*from\s*['"]@modern-js\/app-tools['"]/,
+    );
+    if (appToolsImp) {
+      const ns = appToolsImp[1]
+        .split(',')
+        .map(s => s.trim())
+        .filter(Boolean);
+      ns.unshift('appTools');
+      code = code.replace(
+        appToolsImp[0],
+        `import { ${ns.join(', ')} } from '@modern-js/app-tools'`,
+      );
+      hasAppTools = true;
+      note(changed, '配置：在 @modern-js/app-tools import 上补 appTools');
+    }
+  }
   // 只改 defineConfig 的**顶层** plugins（避免误命中 tools.postcss.postcssOptions.plugins 等嵌套）
   const dc = code.match(/defineConfig\(\s*\{/);
   if (!dc) {
@@ -214,7 +241,6 @@ function addBffPlugin(dir, flags) {
   }
   const props = topLevelProps(obj.body);
   const pluginsIdx = props.findIndex(p => /^plugins\s*:/.test(p));
-  const appToolsCall = /\bappTools\b/.test(code) ? 'appTools(), ' : '';
   let newProps;
   if (pluginsIdx !== -1) {
     newProps = props.map((p, i) =>
@@ -228,11 +254,15 @@ function addBffPlugin(dir, flags) {
         'modern.config 顶层 plugins 缺少 appTools()，请按 v3 模板补上',
       );
     }
+  } else if (!hasAppTools) {
+    // 无 plugins 数组且无法补 appTools import：不写半成品，交人工
+    note(
+      manual,
+      'BFF 已启用但无法定位/补充 appTools import：请手动添加 plugins: [appTools(), bffPlugin()]',
+    );
+    return;
   } else {
-    newProps = [`plugins: [${appToolsCall}${localName}()]`, ...props];
-    if (!appToolsCall) {
-      note(manual, '未 import appTools：请确认 v3 plugins 含 appTools()');
-    }
+    newProps = [`plugins: [appTools(), ${localName}()]`, ...props];
   }
   const newObj = newProps.length ? `{\n  ${newProps.join(',\n  ')},\n}` : '{}';
   code = code.slice(0, objStart) + newObj + code.slice(obj.end);
@@ -261,8 +291,12 @@ function migrateConfig(dir) {
   const before = code;
   let hadTailwind = false;
 
+  // applyBaseConfig 包装：dev.port 这类结构性迁移交人工（由 migrateRuntimeBlock 统一记 manual），
+  // 这里只做 tailwind 等安全的文本级移除
+  const wrapped = /\bapplyBaseConfig\s*\(/.test(code);
+
   // dev.port -> server.port：只移动 port，保留 dev 块其余配置；解析不了则进人工清单
-  const devMatch = code.match(/\bdev\s*:\s*\{/);
+  const devMatch = wrapped ? null : code.match(/\bdev\s*:\s*\{/);
   if (devMatch) {
     const block = extractBalanced(
       code,
@@ -317,6 +351,168 @@ function migrateConfig(dir) {
     if (hadTailwind) note(changed, `配置 ${configFile}：移除 tailwind 插件`);
   }
   return hadTailwind;
+}
+
+// 从 `appTools(...)` 调用里**只删 bundler 参数**（v3 默认 Rspack，不再接受 bundler），
+// 保留其它选项与别的 plugin 参数；返回 {code, changed}
+function stripAppToolsBundler(code) {
+  const m = code.match(/\bappTools\s*\(/);
+  if (!m) return { code, changed: false };
+  const open = m.index + m[0].length - 1; // '(' 的下标
+  let depth = 0;
+  let close = -1;
+  for (let i = open; i < code.length; i++) {
+    if (code[i] === '(') depth += 1;
+    else if (code[i] === ')') {
+      depth -= 1;
+      if (depth === 0) {
+        close = i;
+        break;
+      }
+    }
+  }
+  if (close === -1) return { code, changed: false };
+  const argText = code.slice(open + 1, close).trim();
+  if (!argText.startsWith('{')) return { code, changed: false }; // 空参/函数式 → 不动
+  const props = topLevelProps(argText);
+  const kept = props.filter(p => !/^['"]?bundler['"]?\s*:/.test(p));
+  if (kept.length === props.length) return { code, changed: false }; // 无 bundler
+  const newArg = kept.length ? `{ ${kept.join(', ')} }` : '';
+  return {
+    code: code.slice(0, open + 1) + newArg + code.slice(close),
+    changed: true,
+  };
+}
+
+// 把 runtime 配置对象合并进 src/modern.runtime.ts。
+// 返回 'created'（新建）| 'ok'（合并进空的 defineRuntimeConfig({})）| 'conflict'（已有非空配置，需人工）
+function mergeIntoRuntime(dir, rtValue) {
+  const src = path.join(dir, 'src');
+  if (!fs.existsSync(src)) fs.mkdirSync(src, { recursive: true });
+  const rtFile = [
+    'modern.runtime.ts',
+    'modern.runtime.js',
+    'modern.runtime.tsx',
+  ]
+    .map(f => path.join(src, f))
+    .find(fs.existsSync);
+  if (!rtFile) {
+    fs.writeFileSync(
+      path.join(src, 'modern.runtime.ts'),
+      [
+        `import { defineRuntimeConfig } from '@modern-js/runtime';`,
+        '',
+        `export default defineRuntimeConfig(${rtValue});`,
+        '',
+      ].join('\n'),
+    );
+    return 'created';
+  }
+  let code = readText(rtFile);
+  // 仅当现有是空的 defineRuntimeConfig({}) 时才安全合并；否则交人工
+  const empty = code.match(/defineRuntimeConfig\(\s*\{\s*\}\s*\)/);
+  if (empty) {
+    code = code.replace(empty[0], `defineRuntimeConfig(${rtValue})`);
+    fs.writeFileSync(rtFile, code);
+    return 'ok';
+  }
+  return 'conflict';
+}
+
+// ---- 3b) v2 主路径配置：appTools({ bundler }) → appTools()；顶层 runtime 块 → modern.runtime.ts ----
+// v3 不再支持在 modern.config 配 runtime（见 guides/upgrade/entry），必须迁到 modern.runtime.ts
+function migrateRuntimeBlock(dir) {
+  const configFile = [
+    'modern.config.ts',
+    'modern.config.js',
+    'modern.config.mjs',
+  ].find(f => exists(dir, f));
+  if (!configFile) return;
+  const file = path.join(dir, configFile);
+  let code = readText(file);
+  let touched = false;
+
+  // applyBaseConfig 是仓库 integration 测试 helper / 非标准用户配置包装：结构性迁移
+  // （runtime / plugins / dev.port / appTools bundler）一律交人工，避免半自动改坏。
+  // 文件级安全改写（依赖升级 / import 路径 / tailwind 移除）仍由其它步骤完成。
+  if (/\bapplyBaseConfig\s*\(/.test(code)) {
+    note(
+      manual,
+      '⚠️ 结构迁移未完成：modern.config 用 applyBaseConfig(...)（integration 测试 helper / 非标准配置包装）包裹。runtime / plugins / dev.port / appTools({ bundler }) 等结构性迁移需先人工展开为 defineConfig 再处理；本次仅完成依赖升级 / import 路径 / tailwind 等文件级安全改写，配置结构尚未迁移到 v3。',
+    );
+    return;
+  }
+
+  // (a) appTools({ bundler }) → appTools()
+  const at = stripAppToolsBundler(code);
+  if (at.changed) {
+    code = at.code;
+    touched = true;
+    note(changed, '配置：appTools({ bundler }) → appTools()（v3 默认 Rspack）');
+  }
+
+  // (b) 顶层 runtime 块 → modern.runtime.ts
+  let objStart = -1;
+  const dcObj = code.match(/defineConfig\(\s*\{/);
+  if (dcObj) {
+    objStart = dcObj.index + dcObj[0].length - 1;
+  } else {
+    const ed = code.match(/export\s+default\s*\{/);
+    if (ed) objStart = ed.index + ed[0].length - 1;
+  }
+  if (objStart === -1) {
+    // 函数式 / 动态 defineConfig(() => ({...}))：runtime 无法安全静态搬运
+    if (/\bruntime\s*:/.test(code)) {
+      note(
+        manual,
+        'modern.config 使用函数式/动态配置且含 runtime：需人工迁到 modern.runtime.ts（见 references/migrate-entry.md）',
+      );
+    }
+    if (touched) fs.writeFileSync(file, code);
+    return;
+  }
+  const obj = extractBalanced(code, objStart);
+  if (!obj) {
+    if (touched) fs.writeFileSync(file, code);
+    return;
+  }
+  const props = topLevelProps(obj.body);
+  const rtIdx = props.findIndex(p => /^runtime\s*:/.test(p));
+  if (rtIdx === -1) {
+    if (touched) fs.writeFileSync(file, code);
+    return;
+  }
+  const rtProp = props[rtIdx];
+  const rtValue = rtProp.slice(rtProp.indexOf(':') + 1).trim();
+  if (!rtValue.startsWith('{')) {
+    // runtime 为函数式/非对象字面量 → 人工，保留在 config
+    note(
+      manual,
+      'modern.config 的 runtime 为函数式/非对象：需人工迁到 src/modern.runtime.ts',
+    );
+    if (touched) fs.writeFileSync(file, code);
+    return;
+  }
+  const merged = mergeIntoRuntime(dir, rtValue);
+  if (merged === 'conflict') {
+    note(
+      manual,
+      '已存在非空 src/modern.runtime.ts：modern.config 的 runtime 需人工合并（暂保留在 config，见 references/migrate-entry.md）',
+    );
+    if (touched) fs.writeFileSync(file, code);
+    return;
+  }
+  // 合并成功才从 config 移除 runtime 块
+  const restProps = props.filter((_, i) => i !== rtIdx);
+  const newObj = restProps.length
+    ? `{\n  ${restProps.join(',\n  ')},\n}`
+    : '{}';
+  code = code.slice(0, objStart) + newObj + code.slice(obj.end);
+  fs.writeFileSync(file, code);
+  note(
+    changed,
+    `modern.config 的 runtime 块 → src/modern.runtime.ts（${merged === 'created' ? '新建' : '合并进空配置'}）`,
+  );
 }
 
 // ---- 4) 入口：index→entry（含 bootstrap 改写）、App.config 抽取 ----
@@ -423,9 +619,15 @@ function migrateRuntimeContext(files, reactMajor) {
   const api = reactMajor >= 19 ? 'use' : 'useContext';
   const hit = [];
   const ctxFieldHits = [];
+  const aliasHits = [];
   for (const f of files) {
     let code = readText(f);
     if (!/\buseRuntimeContext\b/.test(code)) continue;
+    // alias（useRuntimeContext as X）：本地名不确定、调用点改写有歧义，不做文本改写，交人工
+    if (/\buseRuntimeContext\s+as\s+\w+/.test(code)) {
+      aliasHits.push(path.basename(f));
+      continue;
+    }
     // 返回值结构变化：isBrowser 移到顶层，context 简化为 request/response（other.md）
     if (/\bcontext\.(isBrowser|logger|metrics)\b/.test(code)) {
       ctxFieldHits.push(path.basename(f));
@@ -445,19 +647,23 @@ function migrateRuntimeContext(files, reactMajor) {
       },
     );
     // 2) react import：合并 hook 到已有 react import，没有才新建（避免重复声明）
+    //    捕获 default / namespace 前缀（import React, {...} / import * as React, {...}）并保留，
+    //    否则会把 default import React 丢掉（项目里 React.memo / <React.Fragment> 会报错）
     const reactImp = code.match(
-      /import\s+(?:[\w*]+\s*,\s*)?\{([^}]*)\}\s*from\s*(['"])react\2\s*;?/,
+      /import\s+(?:(\*\s+as\s+[\w$]+|[\w$]+(?:\s+as\s+[\w$]+)?)\s*,\s*)?\{([^}]*)\}\s*from\s*(['"])react\3\s*;?/,
     );
     if (reactImp) {
-      const names = reactImp[1]
+      const prefix = reactImp[1];
+      const names = reactImp[2]
         .split(',')
         .map(s => s.trim())
         .filter(Boolean);
       if (!names.includes(api)) {
         names.push(api);
+        const head = prefix ? `${prefix}, ` : '';
         code = code.replace(
           reactImp[0],
-          `import { ${names.join(', ')} } from ${reactImp[2]}react${reactImp[2]};`,
+          `import ${head}{ ${names.join(', ')} } from ${reactImp[3]}react${reactImp[3]};`,
         );
       }
     } else {
@@ -481,6 +687,12 @@ function migrateRuntimeContext(files, reactMajor) {
     note(
       manual,
       `RuntimeContext 返回值结构变化：isBrowser 移到顶层、context 仅含 request/response，需人工调整 context.isBrowser/logger/metrics 用法（见 guides/upgrade/other.md）：${ctxFieldHits.join(', ')}`,
+    );
+  }
+  if (aliasHits.length) {
+    note(
+      manual,
+      `useRuntimeContext 使用了别名（as），未自动改写：请手动改为 ${api}(RuntimeContext)（见 references/migrate-entry.md）：${aliasHits.join(', ')}`,
     );
   }
 }
@@ -563,6 +775,14 @@ function flagManual(dir) {
   if (/\bwebpack\b|webpackChain/.test(configText)) {
     note(manual, 'webpack 自定义配置 → 确认 Rspack 兼容');
   }
+  // v2 支持在 package.json 的 modernConfig.runtime 配运行时；v3 必须迁到 modern.runtime.ts
+  const pkg = JSON.parse(readText(path.join(dir, 'package.json')));
+  if (pkg.modernConfig?.runtime) {
+    note(
+      manual,
+      'package.json 的 modernConfig.runtime 需人工迁到 src/modern.runtime.ts（见 references/migrate-entry.md）',
+    );
+  }
 }
 
 function main() {
@@ -592,6 +812,9 @@ function main() {
   const importFlags = migrateImportPaths(files);
   ensureMappedDeps(dir, toVersion, importFlags);
   const hadTailwind = migrateConfig(dir);
+  // runtime 块 → modern.runtime.ts、appTools({ bundler }) → appTools()（applyBaseConfig 走 manual）
+  // 须在 migrateEntry 之前：若它新建/填充了 modern.runtime.ts，App.config 抽取会识别为已存在而走 merge/manual
+  migrateRuntimeBlock(dir);
   addBffPlugin(dir, importFlags);
   migrateEntry(dir);
   // entry/runtime 改完后再扫一次最新文件做 runtime-context

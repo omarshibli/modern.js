@@ -108,6 +108,12 @@ function main() {
   };
   const appToolsVersion = deps['@modern-js/app-tools'] ?? null;
   const appToolsMajor = majorOf(appToolsVersion);
+  // monorepo 协议（workspace:* / link: / catalog: / * 等）无法解析出主版本号，
+  // 但仍是 Modern.js 项目（v2 分支 integration fixture 即如此），不应阻断
+  const WORKSPACE_PROTO = /^(workspace:|link:|file:|catalog:|portal:|npm:|\*$)/;
+  const isWorkspaceVersion =
+    appToolsVersion != null &&
+    WORKSPACE_PROTO.test(String(appToolsVersion).trim());
   const configFile = detectConfigFile(projectDir);
   const configText = configFile
     ? readText(path.join(projectDir, configFile))
@@ -115,7 +121,7 @@ function main() {
 
   // 阻断判断
   const blocking = [];
-  if (appToolsMajor !== 2 && appToolsMajor !== 3) {
+  if (appToolsMajor !== 2 && appToolsMajor !== 3 && !isWorkspaceVersion) {
     blocking.push(
       `当前项目不是可识别的 Modern.js v2/v3 项目，检测到 @modern-js/app-tools = ${appToolsVersion ?? 'missing'}`,
     );
@@ -179,7 +185,13 @@ function main() {
 
   const context = {
     projectDir,
-    migrationState: appToolsMajor === 2 ? 'v2' : 'v3',
+    // 无法解析主版本（workspace 协议）时按 v2 待迁移处理（迁移最安全的默认）
+    migrationState:
+      appToolsMajor === 3
+        ? 'v3'
+        : appToolsMajor === 2 || isWorkspaceVersion
+          ? 'v2'
+          : 'v2',
     appToolsVersion,
     configFile,
     entryType,

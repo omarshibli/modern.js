@@ -1,9 +1,11 @@
 #!/usr/bin/env node
-// 验证 modernjs-migrate-to-v3 skill：把 fixtures 复制到临时目录，跑
-// scan-project.mjs + migrate.mjs，断言迁移结果符合 v2→v3 文档。
-//   node tests/skill/run.mjs
-// 退出码非 0 表示有断言失败。覆盖 happy path + 三类真实形态（已有 runtime、
-// pages 引用、复杂 dev 块）。
+// 验证 modernjs-migrate-to-v3 skill。fixture 分三层（详见各 fixture 的 PROVENANCE.md）：
+//   A. 真实自动迁移 baseline：real-v2-generator-app（generator 默认 defineConfig 形态）
+//   B. origin/v2 integration 真实形态（applyBaseConfig 包装）：real-v2-bff-hono /
+//      real-v2-server-config / real-v2-tailwindcss-v2 —— 验证结构性迁移进 manual、不假成功
+//   C. 存量 / 防御 / blocker edge：legacy-v2-app-config + v2-edge-*
+// 断言区分 provenance（来源结构不被改坏）、automated（应自动迁的内容）、manual（应进人工的内容）。
+//   node tests/skill/run.mjs   —— 退出码非 0 表示有断言失败。
 
 import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
@@ -50,9 +52,7 @@ function prepare(fixture, runMigrate = true) {
     execFileSync(
       'node',
       [path.join(SCRIPTS, 'migrate.mjs'), work, '--to=3.0.0'],
-      {
-        encoding: 'utf8',
-      },
+      { encoding: 'utf8' },
     );
   }
   return {
@@ -70,41 +70,172 @@ function prepare(fixture, runMigrate = true) {
 }
 
 try {
-  // ===== 1) happy path：fixtures/v2-app =====
-  console.log('== v2-app (happy path) ==');
-  const a = prepare('v2-app', false);
-  const scanOut = execFileSync(
+  // ============================================================
+  // A. 真实自动迁移 baseline：real-v2-generator-app（generator 默认 defineConfig）
+  //    来源：origin/v2 MWA generator 模板。验证 v2→v3 自动迁移主路径。
+  // ============================================================
+  console.log('== A. real-v2-generator-app (generator 默认 defineConfig) ==');
+  const ga = prepare('real-v2-generator-app', false);
+  const gaScan = execFileSync(
     'node',
-    [path.join(SCRIPTS, 'scan-project.mjs'), a.work],
+    [path.join(SCRIPTS, 'scan-project.mjs'), ga.work],
     { encoding: 'utf8' },
   );
-  check('扫描判定为 v2 项目', /\(v2\)/.test(scanOut));
+  check('[provenance] 扫描判定为 v2 项目', /\(v2\)/.test(gaScan));
+  check('[provenance] 含 PROVENANCE.md 注明来源', ga.has('PROVENANCE.md'));
   execFileSync(
     'node',
-    [path.join(SCRIPTS, 'migrate.mjs'), a.work, '--to=3.0.0'],
+    [path.join(SCRIPTS, 'migrate.mjs'), ga.work, '--to=3.0.0'],
     { encoding: 'utf8' },
   );
+  const gaPkg = JSON.parse(ga.read('package.json'));
+  check(
+    '[auto] @modern-js/app-tools 升到 3.0.0',
+    gaPkg.devDependencies['@modern-js/app-tools'] === '3.0.0',
+  );
+  check(
+    '[auto] @modern-js/runtime 升到 3.0.0',
+    gaPkg.dependencies['@modern-js/runtime'] === '3.0.0',
+  );
+  const gaCfg = ga.read('modern.config.ts');
+  check(
+    '[provenance] 仍为 defineConfig（未被改成 applyBaseConfig）',
+    /defineConfig\(/.test(gaCfg),
+  );
+  check(
+    '[auto] appTools({ bundler }) → appTools()',
+    /appTools\(\)/.test(gaCfg) && !/bundler/.test(gaCfg),
+  );
+  check(
+    '[auto] modern.config 顶层 runtime 块已移除',
+    !/\bruntime\s*:/.test(gaCfg),
+  );
+  const gaRt = ga.read('src/modern.runtime.ts');
+  check(
+    '[auto] runtime 合并进已存在的空 defineRuntimeConfig({})',
+    /defineRuntimeConfig\(\s*\{[\s\S]*router:\s*true/.test(gaRt),
+  );
+  const gaReport = ga.report();
+  check(
+    '[auto] report.changed 记录 runtime → modern.runtime.ts',
+    gaReport.changed.some(c => /runtime 块/.test(c)),
+  );
+  check(
+    '[auto] manual 为空（默认 app 可全自动迁移）',
+    gaReport.manual.length === 0,
+  );
 
+  // ============================================================
+  // B. origin/v2 integration 真实形态（applyBaseConfig 包装）
+  //    验证：结构性迁移（runtime/plugins/appTools）进 manual、不假成功；
+  //    文件级安全改写（依赖/import 路径/tailwind）照常。
+  // ============================================================
+
+  // B1. real-v2-bff-hono（applyBaseConfig + bffPlugin + runtime.router）
+  console.log('== B1. real-v2-bff-hono (applyBaseConfig, manual 语义) ==');
+  const bh = prepare('real-v2-bff-hono');
+  check('[provenance] 含 PROVENANCE.md', bh.has('PROVENANCE.md'));
+  const bhCfg = bh.read('modern.config.ts');
+  check(
+    '[provenance] applyBaseConfig 包装保留（未被自动展开）',
+    /applyBaseConfig\(/.test(bhCfg),
+  );
+  check(
+    '[provenance] runtime.router 结构保留在 config（未被搬走）',
+    /runtime\s*:\s*\{[\s\S]*router:\s*true/.test(bhCfg),
+  );
+  check(
+    '[provenance] 未生成 src/modern.runtime.ts',
+    !bh.has('src/modern.runtime.ts'),
+  );
+  const bhManual = bh.report().manual.join('\n');
+  check(
+    '[manual] 报告明确「结构迁移未完成」+ applyBaseConfig',
+    /结构迁移未完成/.test(bhManual) && /applyBaseConfig/.test(bhManual),
+  );
+  check(
+    '[auto] 依赖仍升级（文件级安全改写照常）',
+    JSON.parse(bh.read('package.json')).dependencies['@modern-js/runtime'] ===
+      '3.0.0',
+  );
+
+  // B2. real-v2-server-config（applyBaseConfig + server/index.ts hook + modernConfig.runtime）
+  console.log(
+    '== B2. real-v2-server-config (applyBaseConfig + server hook) ==',
+  );
+  const sc = prepare('real-v2-server-config');
+  check('[provenance] 含 PROVENANCE.md', sc.has('PROVENANCE.md'));
+  const scCfg = sc.read('modern.config.ts');
+  check(
+    '[provenance] applyBaseConfig 包装保留',
+    /applyBaseConfig\(/.test(scCfg),
+  );
+  check(
+    '[provenance] runtime 结构保留在 config',
+    /runtime\s*:\s*\{[\s\S]*router:\s*false/.test(scCfg),
+  );
+  const scServer = sc.read('server/index.ts');
+  check(
+    '[auto] server/index.ts: @modern-js/runtime/server → @modern-js/server-runtime',
+    !scServer.includes('@modern-js/runtime/server') &&
+      scServer.includes('@modern-js/server-runtime'),
+  );
+  const scManual = sc.report().manual.join('\n');
+  check(
+    '[manual] applyBaseConfig 结构迁移未完成',
+    /结构迁移未完成/.test(scManual),
+  );
+  check(
+    '[manual] server/index.ts hook → modern.server.ts 进人工',
+    /modern\.server/.test(scManual),
+  );
+  check(
+    '[manual] package.json 的 modernConfig.runtime 进人工',
+    /modernConfig\.runtime/.test(scManual),
+  );
+
+  // B3. real-v2-tailwindcss-v2（applyBaseConfig + tailwind）
+  console.log('== B3. real-v2-tailwindcss-v2 (applyBaseConfig + tailwind) ==');
+  const tw = prepare('real-v2-tailwindcss-v2');
+  check('[provenance] 含 PROVENANCE.md', tw.has('PROVENANCE.md'));
+  check(
+    '[provenance] applyBaseConfig 包装保留',
+    /applyBaseConfig\(/.test(tw.read('modern.config.ts')),
+  );
+  check(
+    '[auto] 移除 @modern-js/plugin-tailwindcss 依赖',
+    !JSON.parse(tw.read('package.json')).dependencies[
+      '@modern-js/plugin-tailwindcss'
+    ],
+  );
+  check('[auto] 生成 postcss.config.cjs', tw.has('postcss.config.cjs'));
+  check(
+    '[auto] 移除 tailwindcssPlugin() 调用与 import',
+    !tw.read('modern.config.ts').includes('tailwindcssPlugin'),
+  );
+  check(
+    '[manual] applyBaseConfig plugins 结构迁移未完成',
+    /结构迁移未完成/.test(tw.report().manual.join('\n')),
+  );
+
+  // ============================================================
+  // C. 存量 / blocker edge
+  // ============================================================
+
+  // C0. legacy-v2-app-config：存量 2.0 形态（App.config/App.init/server/index）
+  console.log('== C0. legacy-v2-app-config (存量 2.0 形态) ==');
+  const a = prepare('legacy-v2-app-config');
   const pkg = JSON.parse(a.read('package.json'));
   check(
     '@modern-js/app-tools 升到 3.0.0',
     pkg.devDependencies['@modern-js/app-tools'] === '3.0.0',
   );
   check(
-    '@modern-js/runtime 升到 3.0.0',
-    pkg.dependencies['@modern-js/runtime'] === '3.0.0',
-  );
-  check(
     '移除 @modern-js/plugin-tailwindcss',
     !pkg.devDependencies['@modern-js/plugin-tailwindcss'],
   );
   check('生成 postcss.config.cjs', a.has('postcss.config.cjs'));
-
   const cfg = a.read('modern.config.ts');
-  check(
-    'config 移除 plugin-tailwindcss import',
-    !cfg.includes('plugin-tailwindcss'),
-  );
   check(
     'config 移除 tailwindcssPlugin() 调用',
     !cfg.includes('tailwindcssPlugin'),
@@ -114,7 +245,6 @@ try {
     /server\s*:\s*\{[^}]*port\s*:\s*8080/.test(cfg),
   );
   check('config 不再有 dev: { port }', !/\bdev\s*:\s*\{\s*port/.test(cfg));
-
   const app = a.read('src/App.tsx');
   check('App.tsx 不再有 App.config', !/\bApp\.config\b/.test(app));
   check('生成 src/modern.runtime.ts', a.has('src/modern.runtime.ts'));
@@ -142,7 +272,7 @@ try {
       /import\s*\{\s*useContext\s*\}\s*from\s*['"]react['"]/.test(app),
   );
   check(
-    '补充 @modern-js/plugin-bff 依赖（import 改到新包）',
+    '补充 @modern-js/plugin-bff 依赖',
     pkg.dependencies['@modern-js/plugin-bff'] === '3.0.0',
   );
   check(
@@ -159,13 +289,12 @@ try {
   check('人工清单含 appIcon', /appIcon/.test(manualA));
   check('人工清单含 ssr', /ssr|SSR/.test(manualA));
 
-  // ===== 2) 已有 modern.runtime.ts + 复杂 dev 块：fixtures/v2-edge-runtime =====
-  console.log('== v2-edge-runtime (existing runtime + dev:{port,hmr}) ==');
+  // C1. 已有 modern.runtime.ts + 复杂 dev 块：v2-edge-runtime
+  console.log('== C1. v2-edge-runtime (existing runtime + dev:{port,hmr}) ==');
   const b = prepare('v2-edge-runtime');
-  const existingRt = b.read('src/modern.runtime.ts');
   check(
     '已有 modern.runtime.ts 未被覆盖（保留 existingPlugin）',
-    existingRt.includes('existingPlugin'),
+    b.read('src/modern.runtime.ts').includes('existingPlugin'),
   );
   check(
     'App.tsx 保留 App.config（未盲目抽取）',
@@ -185,8 +314,8 @@ try {
     /server\s*:\s*\{[^}]*port\s*:\s*8080/.test(cfgB),
   );
 
-  // ===== 3) pages 引用：fixtures/v2-edge-pages =====
-  console.log('== v2-edge-pages (pages + import ../pages) ==');
+  // C2. pages 引用：v2-edge-pages
+  console.log('== C2. v2-edge-pages (pages + import ../pages) ==');
   const c = prepare('v2-edge-pages');
   check('src/pages → src/routes', c.has('src/routes') && !c.has('src/pages'));
   const link = c.read('src/components/Link.tsx');
@@ -199,8 +328,8 @@ try {
     !/pages 引用/.test(c.report().manual.join('\n')),
   );
 
-  // ===== 4) 嵌套 dev.client.port（顶层无 port）：不能误迁 =====
-  console.log('== v2-edge-devnested (nested dev.client.port only) ==');
+  // C3. 嵌套 dev.client.port（顶层无 port）：不能误迁
+  console.log('== C3. v2-edge-devnested (nested dev.client.port only) ==');
   const dn = prepare('v2-edge-devnested');
   const cfgDn = dn.read('modern.config.ts');
   check(
@@ -212,8 +341,10 @@ try {
     !/server\s*:\s*\{[^}]*port/.test(cfgDn),
   );
 
-  // ===== 5) 嵌套 client.port + 顶层 port：只迁顶层 =====
-  console.log('== v2-edge-devboth (nested client.port + top-level port) ==');
+  // C4. 嵌套 client.port + 顶层 port：只迁顶层
+  console.log(
+    '== C4. v2-edge-devboth (nested client.port + top-level port) ==',
+  );
   const db = prepare('v2-edge-devboth');
   const cfgDb = db.read('modern.config.ts');
   check(
@@ -225,8 +356,8 @@ try {
     /client\s*:\s*\{[^}]*port\s*:\s*8081/.test(cfgDb),
   );
 
-  // ===== 6) React 19：useRuntimeContext → use() =====
-  console.log('== v2-edge-react19 (React 19 → use()) ==');
+  // C5. React 19：useRuntimeContext → use()
+  console.log('== C5. v2-edge-react19 (React 19 → use()) ==');
   const r = prepare('v2-edge-react19');
   const appR = r.read('src/App.tsx');
   check(
@@ -235,8 +366,10 @@ try {
       /import\s*\{\s*use\s*\}\s*from\s*['"]react['"]/.test(appR),
   );
 
-  // ===== 7) BFF import 但 config 无 plugins 数组：必须真的插入 bffPlugin() =====
-  console.log('== v2-edge-bff-noplugins (defineConfig({}) + bff import) ==');
+  // C6. BFF import 但 config 无 plugins 数组：必须真的插入 bffPlugin()
+  console.log(
+    '== C6. v2-edge-bff-noplugins (defineConfig({}) + bff import) ==',
+  );
   const bn = prepare('v2-edge-bff-noplugins');
   const cfgBn = bn.read('modern.config.ts');
   check(
@@ -250,16 +383,18 @@ try {
     ] === '3.0.0',
   );
 
-  // ===== 8) RuntimeContext 返回值结构变化：context.isBrowser 进人工清单 =====
-  console.log('== v2-edge-runtimectx (context.isBrowser) ==');
+  // C7. RuntimeContext 返回值结构变化：context.isBrowser 进人工清单
+  console.log('== C7. v2-edge-runtimectx (context.isBrowser) ==');
   const rc = prepare('v2-edge-runtimectx');
   check(
     'context.isBrowser 旧用法进人工清单',
     /isBrowser/.test(rc.report().manual.join('\n')),
   );
 
-  // ===== 9) 已有 bffPlugin import（双引号）：不能重复 import =====
-  console.log('== v2-edge-bff-dq (existing double-quote bffPlugin import) ==');
+  // C8. 已有 bffPlugin import（双引号）：不能重复 import
+  console.log(
+    '== C8. v2-edge-bff-dq (existing double-quote bffPlugin import) ==',
+  );
   const bd = prepare('v2-edge-bff-dq');
   const cfgBd = bd.read('modern.config.ts');
   check(
@@ -268,8 +403,8 @@ try {
   );
   check('复用已有 import 加入 bffPlugin()', /bffPlugin\(\)/.test(cfgBd));
 
-  // ===== 10) 已有 react import + useRuntimeContext：不能重复声明 =====
-  console.log('== v2-edge-react-existing (existing react import) ==');
+  // C9. 已有 react import + useRuntimeContext：不能重复声明
+  console.log('== C9. v2-edge-react-existing (existing react import) ==');
   const re = prepare('v2-edge-react-existing');
   const appRe = re.read('src/App.tsx');
   check(
@@ -286,8 +421,8 @@ try {
       appRe.includes('useContext(RuntimeContext)'),
   );
 
-  // ===== 11) 嵌套 plugins（postcss）+ 无顶层 plugins：BFF 必须进顶层，不误入嵌套 =====
-  console.log('== v2-edge-bff-nested-plugins (nested postcss plugins) ==');
+  // C10. 嵌套 plugins（postcss）+ 无顶层 plugins：BFF 必须进顶层
+  console.log('== C10. v2-edge-bff-nested-plugins (nested postcss plugins) ==');
   const np = prepare('v2-edge-bff-nested-plugins');
   const cfgNp = np.read('modern.config.ts');
   check(
@@ -297,6 +432,88 @@ try {
   check(
     '未把 bffPlugin() 误塞进 postcss 嵌套 plugins',
     /postcssOptions\s*:\s*\{\s*plugins\s*:\s*\[\s*\]/.test(cfgNp),
+  );
+
+  // C11. blocker：React default import 必须保留（import React, { ... }）
+  console.log(
+    '== C11. v2-edge-react-default-import (preserve default React) ==',
+  );
+  const rd = prepare('v2-edge-react-default-import');
+  const appRd = rd.read('src/App.tsx');
+  check(
+    'default import React 保留（不丢失）',
+    /import\s+React\s*,\s*\{[^}]*\}\s*from\s*['"]react['"]/.test(appRd),
+  );
+  check(
+    'useContext 合并进同一 react import',
+    /import\s+React\s*,\s*\{[^}]*\buseContext\b[^}]*\}\s*from\s*['"]react['"]/.test(
+      appRd,
+    ),
+  );
+  check(
+    'useRuntimeContext → useContext(RuntimeContext)',
+    !/\buseRuntimeContext\b/.test(appRd) &&
+      appRd.includes('useContext(RuntimeContext)'),
+  );
+
+  // C12. blocker：useRuntimeContext as alias 不假迁移，进人工清单
+  console.log('== C12. v2-edge-runtimectx-alias (alias → manual) ==');
+  const al = prepare('v2-edge-runtimectx-alias');
+  const appAl = al.read('src/App.tsx');
+  check('alias useCtx() 未被错误改写', appAl.includes('useCtx()'));
+  check('alias 进人工清单', /别名|alias/.test(al.report().manual.join('\n')));
+
+  // C13. blocker：BFF 无 appTools import → 自动补 import
+  console.log('== C13. v2-edge-bff-add-apptools (auto-add appTools import) ==');
+  const aa = prepare('v2-edge-bff-add-apptools');
+  const cfgAa = aa.read('modern.config.ts');
+  check(
+    'appTools 补进 @modern-js/app-tools import',
+    /import\s*\{[^}]*\bappTools\b[^}]*\}\s*from\s*['"]@modern-js\/app-tools['"]/.test(
+      cfgAa,
+    ),
+  );
+  check(
+    'plugins: [appTools(), bffPlugin()]',
+    /plugins\s*:\s*\[\s*appTools\(\)\s*,\s*bffPlugin\(\)/.test(cfgAa),
+  );
+
+  // C14. blocker：BFF 完全无 appTools import → manual，不写半成品
+  console.log(
+    '== C14. v2-edge-bff-no-apptools (no app-tools import → manual) ==',
+  );
+  const na = prepare('v2-edge-bff-no-apptools');
+  check(
+    '未写半成品 plugins（无 bffPlugin() 落盘）',
+    !/bffPlugin\(\)/.test(na.read('modern.config.ts')),
+  );
+  check(
+    '进人工清单（提示手动加 appTools/bffPlugin）',
+    /appTools/.test(na.report().manual.join('\n')),
+  );
+
+  // C15. runtime merge 冲突：已有非空 modern.runtime.ts 不能被覆盖，runtime 留在 config + manual
+  console.log(
+    '== C15. v2-edge-runtime-conflict (non-empty runtime.ts → no overwrite) ==',
+  );
+  const rcf = prepare('v2-edge-runtime-conflict');
+  const rcfRt = rcf.read('src/modern.runtime.ts');
+  check(
+    '已有非空 modern.runtime.ts 未被覆盖（保留 existingPlugin）',
+    rcfRt.includes('existingPlugin'),
+  );
+  const rcfCfg = rcf.read('modern.config.ts');
+  check(
+    '冲突时 runtime 块保留在 config（未误删）',
+    /\bruntime\s*:/.test(rcfCfg),
+  );
+  check(
+    'appTools({ bundler }) 仍被去掉（安全改写照常）',
+    /appTools\(\)/.test(rcfCfg) && !/bundler/.test(rcfCfg),
+  );
+  check(
+    '冲突进人工清单（需人工合并）',
+    /人工合并/.test(rcf.report().manual.join('\n')),
   );
 
   console.log(`\n结果：${pass} 通过 / ${fail} 失败`);
