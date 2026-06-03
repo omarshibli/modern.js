@@ -167,14 +167,32 @@ function addBffPlugin(dir, flags) {
   if (!configFile) return;
   const file = path.join(dir, configFile);
   let code = readText(file);
-  if (/\bbffPlugin\b/.test(code)) return;
-  code = code.replace(
-    /(import[^\n]*\n)/,
-    `$1import { bffPlugin } from '@modern-js/plugin-bff';\n`,
-  );
-  code = code.replace(/plugins\s*:\s*\[/, 'plugins: [bffPlugin(), ');
-  fs.writeFileSync(file, code);
-  note(changed, '配置：添加 bffPlugin()');
+  if (/bffPlugin\s*\(\s*\)/.test(code)) return; // 已有 bffPlugin() 调用
+  if (!code.includes("from '@modern-js/plugin-bff'")) {
+    code = code.replace(
+      /(import[^\n]*\n)/,
+      `$1import { bffPlugin } from '@modern-js/plugin-bff';\n`,
+    );
+  }
+  if (/plugins\s*:\s*\[/.test(code)) {
+    code = code.replace(/plugins\s*:\s*\[/, 'plugins: [bffPlugin(), ');
+  } else {
+    // 没有 plugins 数组（如 defineConfig({})）→ 注入一个
+    code = code.replace(
+      /defineConfig\(\s*\{/,
+      'defineConfig({\n  plugins: [bffPlugin()],',
+    );
+  }
+  // 必须确认 bffPlugin() 真的写进去了，否则不能静默成功
+  if (/bffPlugin\s*\(\s*\)/.test(code)) {
+    fs.writeFileSync(file, code);
+    note(changed, '配置：添加 bffPlugin()');
+  } else {
+    note(
+      manual,
+      'BFF 已启用但无法自动写入 modern.config 的 plugins，请手动加 bffPlugin()',
+    );
+  }
 }
 
 // ---- 3) 配置：dev.port→server.port、移除 tailwind 插件 ----
@@ -351,9 +369,14 @@ function migrateRuntimeContext(files, reactMajor) {
   // React 19+ 用 use(RuntimeContext)；<19（v2 app 常见 17/18）用 useContext，避免生成不可用代码
   const api = reactMajor >= 19 ? 'use' : 'useContext';
   const hit = [];
+  const ctxFieldHits = [];
   for (const f of files) {
     let code = readText(f);
     if (!/\buseRuntimeContext\b/.test(code)) continue;
+    // 返回值结构变化：isBrowser 移到顶层，context 简化为 request/response（other.md）
+    if (/\bcontext\.(isBrowser|logger|metrics)\b/.test(code)) {
+      ctxFieldHits.push(path.basename(f));
+    }
     code = code.replace(
       /import\s*\{([^}]*)\buseRuntimeContext\b([^}]*)\}\s*from\s*['"]@modern-js\/runtime['"]\s*;?/,
       (_, a, b) => {
@@ -378,6 +401,12 @@ function migrateRuntimeContext(files, reactMajor) {
     note(
       changed,
       `useRuntimeContext → ${api}(RuntimeContext)（React ${reactMajor >= 19 ? '19+' : '<19'}）：${hit.join(', ')}`,
+    );
+  }
+  if (ctxFieldHits.length) {
+    note(
+      manual,
+      `RuntimeContext 返回值结构变化：isBrowser 移到顶层、context 仅含 request/response，需人工调整 context.isBrowser/logger/metrics 用法（见 guides/upgrade/other.md）：${ctxFieldHits.join(', ')}`,
     );
   }
 }

@@ -235,6 +235,29 @@ try {
       /import\s*\{\s*use\s*\}\s*from\s*['"]react['"]/.test(appR),
   );
 
+  // ===== 7) BFF import 但 config 无 plugins 数组：必须真的插入 bffPlugin() =====
+  console.log('== v2-edge-bff-noplugins (defineConfig({}) + bff import) ==');
+  const bn = prepare('v2-edge-bff-noplugins');
+  const cfgBn = bn.read('modern.config.ts');
+  check(
+    '无 plugins 数组时仍插入 plugins: [bffPlugin()]',
+    /plugins\s*:\s*\[[^\]]*bffPlugin\(\)/.test(cfgBn),
+  );
+  check(
+    '补 @modern-js/plugin-bff 依赖',
+    JSON.parse(bn.read('package.json')).dependencies[
+      '@modern-js/plugin-bff'
+    ] === '3.0.0',
+  );
+
+  // ===== 8) RuntimeContext 返回值结构变化：context.isBrowser 进人工清单 =====
+  console.log('== v2-edge-runtimectx (context.isBrowser) ==');
+  const rc = prepare('v2-edge-runtimectx');
+  check(
+    'context.isBrowser 旧用法进人工清单',
+    /isBrowser/.test(rc.report().manual.join('\n')),
+  );
+
   console.log(`\n结果：${pass} 通过 / ${fail} 失败`);
   if (fail > 0) process.exit(1);
   console.log('✅ migrate-to-v3 skill 迁移验证通过');
