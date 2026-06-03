@@ -15,6 +15,7 @@ const TARGETS = {
   codex: '.agents/skills',
   cursor: '.cursor/skills',
 };
+const LEGACY_SKILL_NAMES = ['modernjs-dependency-audit'];
 
 function usage() {
   console.log(`Sync Modern.js maintainer skills into agent tool directories.
@@ -113,6 +114,64 @@ function relativeSymlinkTarget(fromDir, toDir) {
   return relative.startsWith('.') ? relative : `.${path.sep}${relative}`;
 }
 
+function cleanupLegacyLinks(targetRoot, dryRun) {
+  for (const name of LEGACY_SKILL_NAMES) {
+    const legacyPath = path.join(targetRoot, name);
+    try {
+      fs.lstatSync(legacyPath);
+    } catch {
+      continue;
+    }
+
+    if (dryRun) {
+      console.log(
+        `[dry-run] remove legacy: ${path.relative(REPO_ROOT, legacyPath)}`,
+      );
+      continue;
+    }
+    fs.rmSync(legacyPath, { recursive: true, force: true });
+  }
+}
+
+function cleanupBrokenSkillLinks(targetRoot, dryRun) {
+  if (!fs.existsSync(targetRoot)) return;
+
+  for (const entry of fs.readdirSync(targetRoot)) {
+    const fullPath = path.join(targetRoot, entry);
+    let stat;
+    try {
+      stat = fs.lstatSync(fullPath);
+    } catch {
+      continue;
+    }
+    if (!stat.isSymbolicLink()) continue;
+
+    let target;
+    try {
+      target = fs.realpathSync(fullPath);
+    } catch {
+      if (dryRun) {
+        console.log(
+          `[dry-run] remove broken: ${path.relative(REPO_ROOT, fullPath)}`,
+        );
+        continue;
+      }
+      fs.rmSync(fullPath, { recursive: true, force: true });
+      continue;
+    }
+
+    if (target.startsWith(SOURCE_DIR) && !fs.existsSync(target)) {
+      if (dryRun) {
+        console.log(
+          `[dry-run] remove missing source: ${path.relative(REPO_ROOT, fullPath)}`,
+        );
+        continue;
+      }
+      fs.rmSync(fullPath, { recursive: true, force: true });
+    }
+  }
+}
+
 function syncSkill(skill, targetName, dryRun) {
   const targetRoot = path.join(REPO_ROOT, TARGETS[targetName]);
   const dest = path.join(targetRoot, skill.name);
@@ -147,6 +206,9 @@ async function main() {
   }
 
   for (const targetName of targetNames) {
+    const targetRoot = path.join(REPO_ROOT, TARGETS[targetName]);
+    cleanupLegacyLinks(targetRoot, dryRun);
+    cleanupBrokenSkillLinks(targetRoot, dryRun);
     for (const skill of skills) {
       syncSkill(skill, targetName, dryRun);
     }

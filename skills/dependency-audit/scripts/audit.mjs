@@ -7,7 +7,7 @@
 //
 // Report perspectives:
 //   1) Maintainer: whole monorepo dependency health, installed size, install timing hook.
-//   2) Modern user app: create template + integration app fixtures dependency profile.
+//   2) Modern user app: generated app fixture with an independent install.
 
 import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
@@ -44,15 +44,14 @@ function parseArgs(argv) {
   const json = rest.includes('--json');
   const failOnFindings = rest.includes('--fail-on-findings');
   const measureInstall = rest.includes('--measure-install');
-  const measureUserApp =
-    measureInstall || rest.includes('--measure-user-app-install');
+  const skipUserAppInstall = rest.includes('--skip-user-app-install');
+  const measureUserApp = !skipUserAppInstall;
   const topArg = rest.find(arg => arg.startsWith('--top='));
   const userAppArg = rest.find(arg => arg.startsWith('--user-app='));
   const dir = rest.find(arg => !arg.startsWith('--'));
 
   return {
     dir: resolveDefaultDir(dir),
-    explicitDir: Boolean(dir),
     failOnFindings,
     json,
     measureInstall,
@@ -434,26 +433,6 @@ function directDependencySize(manifests, installedByPackage) {
     .sort((a, b) => b.bytes - a.bytes);
 }
 
-function readCreateTemplateManifest(repoRoot) {
-  const file = path.join(
-    repoRoot,
-    'packages/toolkit/create/template/package.json.handlebars',
-  );
-  if (!fs.existsSync(file)) return null;
-
-  const text = fs
-    .readFileSync(file, 'utf-8')
-    .replace(/{{packageName}}/g, 'modern-user-app')
-    .replace(/{{version}}/g, 'workspace:*')
-    .replace(/{{#unless isSubproject}}/g, '')
-    .replace(/{{\/unless}}/g, '');
-
-  return {
-    source: path.relative(repoRoot, file),
-    manifest: JSON.parse(text),
-  };
-}
-
 function workspaceVersions(repoRoot) {
   const versions = new Map();
   for (const dir of [repoRoot, ...findPackageDirs(repoRoot)]) {
@@ -507,70 +486,30 @@ function prepareGeneratedUserApp(repoRoot) {
 
   fs.rmSync(appDir, { recursive: true, force: true });
   copyRenderedTemplate(templateDir, appDir, workspaceVersions(repoRoot));
+  fs.writeFileSync(
+    path.join(appDir, 'pnpm-workspace.yaml'),
+    'packages:\n  - .\n',
+  );
   return appDir;
 }
 
 function measureInstall(cwd) {
   const startedAt = Date.now();
-  const result = spawnSync(
-    '/usr/bin/time',
-    ['-p', 'pnpm', 'install', '--ignore-scripts'],
-    {
-      cwd,
-      encoding: 'utf-8',
-      maxBuffer: 1024 * 1024 * 20,
-    },
-  );
-  const output = `${result.stdout || ''}\n${result.stderr || ''}`;
-  const real = output.match(/^real\s+([\d.]+)/m);
+  const result = spawnSync('pnpm', ['install', '--ignore-scripts'], {
+    cwd,
+    encoding: 'utf-8',
+    maxBuffer: 1024 * 1024 * 20,
+  });
+  const elapsedMs = Date.now() - startedAt;
 
   return {
     measured: true,
-    command: '/usr/bin/time -p pnpm install --ignore-scripts',
+    command: 'pnpm install --ignore-scripts',
     exitCode: result.status,
-    elapsedMs: Date.now() - startedAt,
-    realSeconds: real ? Number(real[1]) : null,
+    elapsedMs,
+    realSeconds: elapsedMs / 1000,
+    error: result.error ? result.error.message : null,
   };
-}
-
-function collectUserAppManifests(repoRoot, explicitUserAppDir) {
-  const manifests = [];
-
-  if (explicitUserAppDir) {
-    manifests.push({
-      source: path.relative(
-        repoRoot,
-        path.join(explicitUserAppDir, 'package.json'),
-      ),
-      manifest: readJson(path.join(explicitUserAppDir, 'package.json')),
-    });
-    return manifests;
-  }
-
-  const templateManifest = readCreateTemplateManifest(repoRoot);
-  if (templateManifest) manifests.push(templateManifest);
-
-  const integrationRoot = path.join(repoRoot, 'tests/integration');
-  if (fs.existsSync(integrationRoot)) {
-    for (const entry of fs.readdirSync(integrationRoot, {
-      withFileTypes: true,
-    })) {
-      if (!entry.isDirectory()) continue;
-      const packageJson = path.join(
-        integrationRoot,
-        entry.name,
-        'package.json',
-      );
-      if (fs.existsSync(packageJson)) {
-        manifests.push({
-          source: path.relative(repoRoot, packageJson),
-          manifest: readJson(packageJson),
-        });
-      }
-    }
-  }
-
-  return manifests;
 }
 
 function aggregatePackageReports(reports) {
@@ -596,28 +535,24 @@ function aggregatePackageReports(reports) {
 
 function measureInstallTime(repoRoot) {
   const startedAt = Date.now();
-  const result = spawnSync(
-    '/usr/bin/time',
-    ['-p', 'pnpm', 'install', '--frozen-lockfile'],
-    {
-      cwd: repoRoot,
-      encoding: 'utf-8',
-      maxBuffer: 1024 * 1024 * 20,
-    },
-  );
-  const output = `${result.stdout || ''}\n${result.stderr || ''}`;
-  const real = output.match(/^real\s+([\d.]+)/m);
+  const result = spawnSync('pnpm', ['install', '--frozen-lockfile'], {
+    cwd: repoRoot,
+    encoding: 'utf-8',
+    maxBuffer: 1024 * 1024 * 20,
+  });
+  const elapsedMs = Date.now() - startedAt;
 
   return {
     measured: true,
-    command: '/usr/bin/time -p pnpm install --frozen-lockfile',
+    command: 'pnpm install --frozen-lockfile',
     exitCode: result.status,
-    elapsedMs: Date.now() - startedAt,
-    realSeconds: real ? Number(real[1]) : null,
+    elapsedMs,
+    realSeconds: elapsedMs / 1000,
+    error: result.error ? result.error.message : null,
   };
 }
 
-function buildUserAppReport(repoRoot, options, repositorySize) {
+function buildUserAppReport(repoRoot, options) {
   const appDir = options.userAppDir || prepareGeneratedUserApp(repoRoot);
   const appAudit = auditPackage(appDir);
   const lockfile = path.join(appDir, 'pnpm-lock.yaml');
@@ -625,20 +560,15 @@ function buildUserAppReport(repoRoot, options, repositorySize) {
     ? measureInstall(appDir)
     : {
         measured: false,
-        command:
-          'node skills/dependency-audit/scripts/audit.mjs --measure-user-app-install',
+        command: 'node skills/dependency-audit/scripts/audit.mjs',
       };
   const appSize = installedSizeReport(appDir, options.top, false);
-
-  const referenceManifests = collectUserAppManifests(
-    repoRoot,
-    options.userAppDir,
-  );
+  const manifest = readJson(path.join(appDir, 'package.json'));
 
   return {
     fixtureDir: path.relative(repoRoot, appDir),
     generated: !options.userAppDir,
-    referenceManifestSources: referenceManifests.map(item => item.source),
+    manifestSource: path.relative(repoRoot, path.join(appDir, 'package.json')),
     app: {
       packageCount: 1,
       sourceFiles: appAudit.sourceFiles,
@@ -677,10 +607,10 @@ function buildUserAppReport(repoRoot, options, repositorySize) {
     },
     declaredDirectDependencySizeSource: appSize.byPackage
       ? 'user-app-install'
-      : 'repository-install',
+      : 'user-app-install-unavailable',
     declaredDirectDependencySize: directDependencySize(
-      [readJson(path.join(appDir, 'package.json'))],
-      appSize.byPackage || repositorySize.byPackage,
+      [manifest],
+      appSize.byPackage,
     ).slice(0, options.top),
   };
 }
@@ -695,7 +625,7 @@ function buildRepositoryReport(options) {
   const maintainer = aggregatePackageReports(packageReports);
   const lockfile = findLockfile(repoRoot);
   const size = installedSizeReport(repoRoot, options.top);
-  const user = buildUserAppReport(repoRoot, options, size);
+  const user = buildUserAppReport(repoRoot, options);
 
   return {
     target: repoRoot,
@@ -855,13 +785,7 @@ function printRepositoryReport(report, top) {
         : `${report.userApp.installTime.realSeconds ?? 'unknown'}s (exit ${report.userApp.installTime.exitCode})`
     }`,
   );
-  console.log(
-    `- reference app manifests: ${report.userApp.referenceManifestSources.length} (${report.userApp.referenceManifestSources
-      .slice(0, 6)
-      .join(', ')}${
-      report.userApp.referenceManifestSources.length > 6 ? ', ...' : ''
-    })`,
-  );
+  console.log(`- manifest: ${report.userApp.manifestSource}`);
   console.log(
     `- declared direct dependency installed size (${report.userApp.declaredDirectDependencySizeSource}):`,
   );
@@ -873,7 +797,7 @@ function printRepositoryReport(report, top) {
   }
 
   console.log(
-    '\nNotes: phantom/cycle detection is static analysis. Use --measure-user-app-install to install and measure the generated user app fixture; use --measure-install only when you intentionally want to run pnpm install timing for both the repo and user app.',
+    '\nNotes: phantom/cycle detection is static analysis. User app install is measured by default; use --skip-user-app-install to skip it. Use --measure-install only when you intentionally want to run pnpm install timing for the repository root too.',
   );
 }
 
@@ -914,7 +838,7 @@ function hasFindings(report) {
 
 function main() {
   const options = parseArgs(process.argv);
-  const repoMode = isMonorepoRoot(options.dir) && !options.explicitDir;
+  const repoMode = isMonorepoRoot(options.dir);
   const report = repoMode
     ? buildRepositoryReport(options)
     : buildPackageReport(options);
