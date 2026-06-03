@@ -240,8 +240,8 @@ try {
   const bn = prepare('v2-edge-bff-noplugins');
   const cfgBn = bn.read('modern.config.ts');
   check(
-    '无 plugins 数组时仍插入 plugins: [bffPlugin()]',
-    /plugins\s*:\s*\[[^\]]*bffPlugin\(\)/.test(cfgBn),
+    '无 plugins 数组时插入 plugins: [appTools(), bffPlugin()]',
+    /plugins\s*:\s*\[\s*appTools\(\)\s*,\s*bffPlugin\(\)/.test(cfgBn),
   );
   check(
     '补 @modern-js/plugin-bff 依赖',
@@ -267,6 +267,37 @@ try {
     (cfgBd.match(/@modern-js\/plugin-bff/g) || []).length === 1,
   );
   check('复用已有 import 加入 bffPlugin()', /bffPlugin\(\)/.test(cfgBd));
+
+  // ===== 10) 已有 react import + useRuntimeContext：不能重复声明 =====
+  console.log('== v2-edge-react-existing (existing react import) ==');
+  const re = prepare('v2-edge-react-existing');
+  const appRe = re.read('src/App.tsx');
+  check(
+    'react import 只 1 处（不重复声明）',
+    (appRe.match(/from\s+['"]react['"]/g) || []).length === 1,
+  );
+  check(
+    'RuntimeContext 不重复 specifier',
+    !/RuntimeContext\s*,\s*RuntimeContext/.test(appRe),
+  );
+  check(
+    'useRuntimeContext → useContext(RuntimeContext)',
+    !/\buseRuntimeContext\b/.test(appRe) &&
+      appRe.includes('useContext(RuntimeContext)'),
+  );
+
+  // ===== 11) 嵌套 plugins（postcss）+ 无顶层 plugins：BFF 必须进顶层，不误入嵌套 =====
+  console.log('== v2-edge-bff-nested-plugins (nested postcss plugins) ==');
+  const np = prepare('v2-edge-bff-nested-plugins');
+  const cfgNp = np.read('modern.config.ts');
+  check(
+    '顶层注入 plugins: [appTools(), bffPlugin()]',
+    /plugins\s*:\s*\[\s*appTools\(\)\s*,\s*bffPlugin\(\)/.test(cfgNp),
+  );
+  check(
+    '未把 bffPlugin() 误塞进 postcss 嵌套 plugins',
+    /postcssOptions\s*:\s*\{\s*plugins\s*:\s*\[\s*\]/.test(cfgNp),
+  );
 
   console.log(`\n结果：${pass} 通过 / ${fail} 失败`);
   if (fail > 0) process.exit(1);

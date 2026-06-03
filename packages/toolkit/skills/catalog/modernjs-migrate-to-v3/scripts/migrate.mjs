@@ -194,23 +194,56 @@ function addBffPlugin(dir, flags) {
       `$1import { bffPlugin } from '@modern-js/plugin-bff';\n`,
     );
   }
-  if (/plugins\s*:\s*\[/.test(code)) {
-    code = code.replace(/plugins\s*:\s*\[/, `plugins: [${localName}(), `);
-  } else {
-    // 没有 plugins 数组（如 defineConfig({})）→ 注入一个
-    code = code.replace(
-      /defineConfig\(\s*\{/,
-      `defineConfig({\n  plugins: [${localName}()],`,
+  // 只改 defineConfig 的**顶层** plugins（避免误命中 tools.postcss.postcssOptions.plugins 等嵌套）
+  const dc = code.match(/defineConfig\(\s*\{/);
+  if (!dc) {
+    note(
+      manual,
+      '无法定位 defineConfig({...})，请手动把 bffPlugin() 加进顶层 plugins',
     );
+    return;
   }
-  // 必须确认插件调用真的写进去了，否则不能静默成功
-  if (new RegExp(`${localName}\\s*\\(\\s*\\)`).test(code)) {
+  const objStart = dc.index + dc[0].length - 1;
+  const obj = extractBalanced(code, objStart);
+  if (!obj) {
+    note(
+      manual,
+      'defineConfig 解析失败，请手动把 bffPlugin() 加进顶层 plugins',
+    );
+    return;
+  }
+  const props = topLevelProps(obj.body);
+  const pluginsIdx = props.findIndex(p => /^plugins\s*:/.test(p));
+  const appToolsCall = /\bappTools\b/.test(code) ? 'appTools(), ' : '';
+  let newProps;
+  if (pluginsIdx !== -1) {
+    newProps = props.map((p, i) =>
+      i === pluginsIdx
+        ? p.replace(/plugins\s*:\s*\[/, `plugins: [${localName}(), `)
+        : p,
+    );
+    if (!/\bappTools\s*\(/.test(newProps[pluginsIdx])) {
+      note(
+        manual,
+        'modern.config 顶层 plugins 缺少 appTools()，请按 v3 模板补上',
+      );
+    }
+  } else {
+    newProps = [`plugins: [${appToolsCall}${localName}()]`, ...props];
+    if (!appToolsCall) {
+      note(manual, '未 import appTools：请确认 v3 plugins 含 appTools()');
+    }
+  }
+  const newObj = newProps.length ? `{\n  ${newProps.join(',\n  ')},\n}` : '{}';
+  code = code.slice(0, objStart) + newObj + code.slice(obj.end);
+
+  if (new RegExp(`${localName}\\s*\\(\\s*\\)`).test(newObj)) {
     fs.writeFileSync(file, code);
     note(changed, '配置：添加 bffPlugin()');
   } else {
     note(
       manual,
-      'BFF 已启用但无法自动写入 modern.config 的 plugins，请手动加 bffPlugin()',
+      'BFF 已启用但无法自动写入 modern.config 顶层 plugins，请手动加 bffPlugin()',
     );
   }
 }
@@ -397,19 +430,40 @@ function migrateRuntimeContext(files, reactMajor) {
     if (/\bcontext\.(isBrowser|logger|metrics)\b/.test(code)) {
       ctxFieldHits.push(path.basename(f));
     }
+    // 1) @modern-js/runtime import：去掉 useRuntimeContext，补 RuntimeContext（去重）
     code = code.replace(
-      /import\s*\{([^}]*)\buseRuntimeContext\b([^}]*)\}\s*from\s*['"]@modern-js\/runtime['"]\s*;?/,
-      (_, a, b) => {
-        const rest = `${a}${b}`
-          .replace(/,\s*,/g, ',')
-          .replace(/^\s*,|,\s*$/g, '')
-          .trim();
-        const runtimeImport = rest
-          ? `import { ${rest.replace(/\s+/g, ' ')}, RuntimeContext } from '@modern-js/runtime';`
-          : `import { RuntimeContext } from '@modern-js/runtime';`;
-        return `import { ${api} } from 'react';\n${runtimeImport}`;
+      /import\s*\{([^}]*)\}\s*from\s*(['"])@modern-js\/runtime\2\s*;?/,
+      (m, specs, q) => {
+        if (!/\buseRuntimeContext\b/.test(specs)) return m;
+        const names = specs
+          .split(',')
+          .map(s => s.trim())
+          .filter(Boolean)
+          .filter(n => n !== 'useRuntimeContext');
+        if (!names.includes('RuntimeContext')) names.push('RuntimeContext');
+        return `import { ${names.join(', ')} } from ${q}@modern-js/runtime${q};`;
       },
     );
+    // 2) react import：合并 hook 到已有 react import，没有才新建（避免重复声明）
+    const reactImp = code.match(
+      /import\s+(?:[\w*]+\s*,\s*)?\{([^}]*)\}\s*from\s*(['"])react\2\s*;?/,
+    );
+    if (reactImp) {
+      const names = reactImp[1]
+        .split(',')
+        .map(s => s.trim())
+        .filter(Boolean);
+      if (!names.includes(api)) {
+        names.push(api);
+        code = code.replace(
+          reactImp[0],
+          `import { ${names.join(', ')} } from ${reactImp[2]}react${reactImp[2]};`,
+        );
+      }
+    } else {
+      code = `import { ${api} } from 'react';\n${code}`;
+    }
+    // 3) 调用点
     code = code.replace(
       /\buseRuntimeContext\s*\(\s*\)/g,
       `${api}(RuntimeContext)`,
