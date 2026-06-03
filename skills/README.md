@@ -38,7 +38,7 @@ skills/maintainer/<skill>/        # 唯一手写源
 ### 2. 用户向（user）—— 服务「用 Modern.js 开发应用」的 agent
 
 - **source of truth**：`skills/user/<skill>/...`（或独立 repo），发布时打包成可分发包 **`@modern-js/skills`**（或 marketplace）。
-- **分发包只装用户向 Skill**：`packages/toolkit/skills/skills/*` 是由 `skills/user/*` 同步出来的发布内容，不放维护者内部 Skill。
+- **分发包只装用户向 Skill**：`packages/toolkit/skills/catalog/*` 是由 `skills/user/*` 同步出来的发布内容，不放维护者内部 Skill。
 - **不藏在仓库内部目录、不靠 `@modern-js/create` 隐式安装**。
 - **用户显式安装**：
 
@@ -51,7 +51,7 @@ skills/maintainer/<skill>/        # 唯一手写源
   ```bash
   pnpm --filter @modern-js/skills sync
   ```
-- 已落地：`modernjs-migrate-to-v3`、`modernjs-dependency-audit`。
+- 已落地：`modernjs-migrate-to-v3`。
 - 规划中（P1+）：`modernjs-feature-enable`。
 
 ## 目录约定

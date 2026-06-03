@@ -11,10 +11,10 @@
 npx @modern-js/skills list
 
 # 安装一个 Skill 到 Agent 目录（会提示选择目标 Agent）
-npx @modern-js/skills add modernjs-dependency-audit
+npx @modern-js/skills add modernjs-migrate-to-v3
 
 # 指定目标 Agent 与项目根
-npx @modern-js/skills add modernjs-dependency-audit --target=claude,codex --dir=.
+npx @modern-js/skills add modernjs-migrate-to-v3 --target=claude,codex --dir=.
 ```
 
 `--target`：`claude`（→ `.claude/skills/`）、`codex`（→ `.agents/skills/`）、`cursor`（→ `.cursor/skills/`）、`all`。不传时会先提示你选择。
@@ -24,13 +24,13 @@ npx @modern-js/skills add modernjs-dependency-audit --target=claude,codex --dir=
 | Skill | 说明 |
 |---|---|
 | `modernjs-migrate-to-v3` | v2 → v3 迁移：扫描产出 context.json + 迁移清单（自动/半自动/人工分类），安全改写 import 路径映射 |
-| `modernjs-dependency-audit` | 依赖体检：幽灵依赖、循环依赖、重复多版本、安装体积归因 |
 
-> 更多 Skill（`modernjs-feature-enable`、`modernjs-issue-triage` 等）实现中，完成后会加入此包。
+> 更多**用户向** Skill（`modernjs-feature-enable` 等）实现中，完成后会加入此包。
+> 注：`modernjs-dependency-audit`、`modernjs-issue-triage` 是**维护者内部** Skill，由仓库根脚本同步到 `.claude/.agents/.cursor`，**不进入本分发包**。
 
 ## 与仓库内 source of truth 的关系
 
-Skill 的唯一手写源在 Modern.js 仓库的 `skills/user/*`；本包在发布时把**用户向** Skill 同步到 `skills/`：
+Skill 的唯一手写源在 Modern.js 仓库的 `skills/user/*`；本包在发布时把**用户向** Skill 同步到 `catalog/`：
 
 ```bash
 pnpm --filter @modern-js/skills sync

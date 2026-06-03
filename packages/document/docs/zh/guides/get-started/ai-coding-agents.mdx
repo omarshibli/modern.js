@@ -5,14 +5,7 @@ sidebar_position: 6
 
 # Modern.js For AI
 
-Modern.js 为 AI Agent（Claude Code、Codex、Cursor 等）提供工具，帮助开发者更高效地完成**功能开发、依赖升级、版本迁移**等工作。面向**使用 Modern.js 的开发者**，有两类能力：
-
-- **llms.txt** —— 官方文档知识源（厚、自动生成）：供 AI 工具检索事实。
-- **Skills** —— 可按需安装、按需触发的多步骤流程（带脚本/状态）。
-
-一句话边界：能用文档回答的查 **llms.txt**；多步骤可验证流程用 **Skill**。
-
-> 关于 `AGENTS.md`：它是 **Modern.js 仓库自身**给「**维护本仓库**的 AI Agent」用的常驻约束，属于仓库内部资产。**它不是给你的应用项目的** —— `@modern-js/create` 不会生成它，你也不需要在自己的项目里放一份。
+Modern.js 为 AI Agent 提供了一套工具套件，帮助开发者利用 AI 高效完成 Modern.js 应用的功能开发、依赖升级与版本迁移工作。
 
 ## llms.txt
 
@@ -25,15 +18,14 @@ Modern.js 文档遵循 [llms.txt 规范](https://llmstxt.org/)，由 [`@rspress/
 
 ## Skills
 
-Skills 是按需触发的 AI 辅助能力，遵循 [Agent Skills 开放标准](https://github.com/vercel-labs/next-skills)。规划中的用户向 Skills：
+Skills 是按需触发的 AI 辅助能力，遵循 [Agent Skills 开放标准](https://github.com/vercel-labs/next-skills)。用户向 Skills：
 
 | Skill | 标识 | 说明 |
 |---|---|---|
 | 升级到 v3 | `modernjs-migrate-to-v3` | v2 应用迁移到 v3：安全改写 + 复杂项人工清单 + 迁移报告 |
 | 启用特性 | `modernjs-feature-enable` | 按需启用 BFF / SSG / RSC / Tailwind / Module Federation 等 |
-| 依赖体检 | `modernjs-dependency-audit` | 幽灵依赖、循环依赖、重复多版本、安装体积归因 |
 
-> Skills **默认不强装、不隐式安装**，由你显式安装。部分 Skill 仍在实现中。
+> Skills 默认不强装、不隐式安装，由你显式安装。部分 Skill 仍在实现中。
 
 ## 安装 Skills
 
@@ -43,8 +35,8 @@ Skills 是按需触发的 AI 辅助能力，遵循 [Agent Skills 开放标准](h
 # 列出可安装的 Skills
 npx @modern-js/skills list
 
-# 安装单个 Skill 到你的 Agent 目录，支持 --target=claude|codex|cursor|all
-npx @modern-js/skills add modernjs-dependency-audit --target=claude
+# 安装单个 Skill 到你的 Agent 目录
+npx @modern-js/skills add modernjs-migrate-to-v3 --target=claude
 ```
 
-安装后，Skill 会出现在对应 Agent 的目录（如 Claude Code 的 `.claude/skills/`、Codex 的 `.agents/skills/`），随后即可在该 Agent 里触发。
+安装后，Skill 会出现在对应 Agent 的目录，随后即可在该 Agent 里触发。

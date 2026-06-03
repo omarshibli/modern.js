@@ -15,7 +15,7 @@ import readline from 'node:readline/promises';
 import { fileURLToPath } from 'node:url';
 
 const PKG_ROOT = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
-const SKILLS_DIR = path.join(PKG_ROOT, 'skills');
+const SKILLS_DIR = path.join(PKG_ROOT, 'catalog');
 
 // Agent 工具目录约定：Claude Code → .claude/skills，Codex → .agents/skills，Cursor → .cursor/skills
 const TARGETS = {

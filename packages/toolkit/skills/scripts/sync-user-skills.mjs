@@ -8,7 +8,7 @@ import { fileURLToPath } from 'node:url';
 const PACKAGE_ROOT = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 const REPO_ROOT = path.resolve(PACKAGE_ROOT, '../../..');
 const SOURCE_DIR = path.join(REPO_ROOT, 'skills/user');
-const DEST_DIR = path.join(PACKAGE_ROOT, 'skills');
+const DEST_DIR = path.join(PACKAGE_ROOT, 'catalog');
 
 function copyDir(src, dest) {
   fs.mkdirSync(dest, { recursive: true });

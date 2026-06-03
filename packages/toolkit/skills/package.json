@@ -19,7 +19,7 @@
   "bin": {
     "modern-js-skills": "./bin/cli.mjs"
   },
-  "files": ["bin", "skills"],
+  "files": ["bin", "catalog"],
   "engines": {
     "node": ">=18"
   },

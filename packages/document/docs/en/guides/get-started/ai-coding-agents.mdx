@@ -5,14 +5,7 @@ sidebar_position: 6
 
 # Modern.js For AI
 
-Modern.js provides tooling for AI agents (Claude Code, Codex, Cursor, etc.) to help developers complete **feature development, dependency upgrades, and version migration** more efficiently. For **developers using Modern.js**, there are two kinds of capability:
-
-- **llms.txt** — the official docs knowledge source (large, auto-generated) for AI tools to retrieve facts.
-- **Skills** — installable, on-demand multi-step workflows (with scripts/state).
-
-A one-line rule: look facts up in **llms.txt**; use a **Skill** for multi-step verifiable workflows.
-
-> About `AGENTS.md`: it is an internal asset of the **Modern.js repository itself**, used by AI agents that **maintain this repo**. **It is not for your application project** — `@modern-js/create` does not generate it, and you do not need one in your own project.
+Modern.js provides a toolkit for AI agents that helps developers use AI to efficiently complete feature development, dependency upgrades, and version migration for Modern.js applications.
 
 ## llms.txt
 
@@ -25,15 +18,14 @@ Most "what is this API / config" questions can be answered from llms.txt. Just l
 
 ## Skills
 
-Skills are on-demand AI capabilities following the [Agent Skills open standard](https://github.com/vercel-labs/next-skills). Planned user-facing Skills:
+Skills are on-demand AI capabilities following the [Agent Skills open standard](https://github.com/vercel-labs/next-skills). User-facing Skills:
 
 | Skill | Identifier | Description |
 |---|---|---|
 | Upgrade to v3 | `modernjs-migrate-to-v3` | Migrate a v2 app to v3: safe rewrites + manual checklist + migration report |
 | Enable features | `modernjs-feature-enable` | Enable BFF / SSG / RSC / Tailwind / Module Federation on demand |
-| Dependency audit | `modernjs-dependency-audit` | Phantom deps, circular deps, duplicate versions, install-size attribution |
 
-> Skills are **not force-installed and never installed implicitly** — you install them explicitly. Some Skills are still under implementation.
+> Skills are not force-installed or implicitly installed — you install them explicitly. Some Skills are still under implementation.
 
 ## Installing Skills
 
@@ -43,8 +35,8 @@ User-facing Skills are installed explicitly via the standalone `@modern-js/skill
 # List installable Skills
 npx @modern-js/skills list
 
-# Install a Skill into your agent directory; supports --target=claude|codex|cursor|all
-npx @modern-js/skills add modernjs-dependency-audit --target=claude
+# Install a Skill into your agent directory
+npx @modern-js/skills add modernjs-migrate-to-v3 --target=claude
 ```
 
-After installation, the Skill appears in the corresponding agent directory (e.g. `.claude/skills/` for Claude Code, `.agents/skills/` for Codex) and can be triggered there.
+After installation, the Skill appears in the corresponding agent directory and can be triggered there.
