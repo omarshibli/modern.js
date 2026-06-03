@@ -45,6 +45,7 @@ function parseArgs(argv) {
   const failOnFindings = rest.includes('--fail-on-findings');
   const measureInstall = rest.includes('--measure-install');
   const skipUserAppInstall = rest.includes('--skip-user-app-install');
+  const keepUserAppFixture = rest.includes('--keep-user-app-fixture');
   const measureUserApp = !skipUserAppInstall;
   const topArg = rest.find(arg => arg.startsWith('--top='));
   const userAppArg = rest.find(arg => arg.startsWith('--user-app='));
@@ -54,6 +55,7 @@ function parseArgs(argv) {
     dir: resolveDefaultDir(dir),
     failOnFindings,
     json,
+    keepUserAppFixture,
     measureInstall,
     measureUserApp,
     top: topArg ? Number(topArg.split('=')[1]) : 20,
@@ -477,11 +479,13 @@ function copyRenderedTemplate(src, dest, versions) {
   }
 }
 
-function prepareGeneratedUserApp(repoRoot) {
+function prepareGeneratedUserApp(repoRoot, keepFixture) {
   const templateDir = path.join(repoRoot, 'packages/toolkit/create/template');
   const appDir = path.join(
     repoRoot,
-    `.agents/runs/dependency-audit/user-app-fixture-${process.pid}`,
+    keepFixture
+      ? `.agents/runs/dependency-audit/user-app-fixture-${process.pid}`
+      : '.agents/runs/dependency-audit/user-app-fixture',
   );
 
   fs.rmSync(appDir, { recursive: true, force: true });
@@ -572,7 +576,9 @@ function validateInstallResult(installTime, installSize) {
 }
 
 function buildUserAppReport(repoRoot, options) {
-  const appDir = options.userAppDir || prepareGeneratedUserApp(repoRoot);
+  const appDir =
+    options.userAppDir ||
+    prepareGeneratedUserApp(repoRoot, options.keepUserAppFixture);
   const appAudit = auditPackage(appDir);
   const lockfile = path.join(appDir, 'pnpm-lock.yaml');
   const installTime = options.measureUserApp
@@ -588,6 +594,11 @@ function buildUserAppReport(repoRoot, options) {
   return {
     fixtureDir: path.relative(repoRoot, appDir),
     generated: !options.userAppDir,
+    fixtureRetention: options.userAppDir
+      ? 'provided'
+      : options.keepUserAppFixture
+        ? 'kept'
+        : 'reused',
     workspaceIsolation: options.userAppDir
       ? 'provided'
       : 'local-pnpm-workspace',

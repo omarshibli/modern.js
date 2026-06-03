@@ -24,7 +24,7 @@ user-invocable: true
    ```
    默认输出：
    - **维护者视角**：整仓 package manifest、源码依赖、lockfile 重复多版本、已安装体积；安装耗时默认不推断，可用 `--measure-install` 实测。
-   - **Modern 用户 app 视角**：默认从 create 模板生成一个 user app fixture，并在该 fixture 内独立 install，输出用户应用依赖问题、重复版本、安装耗时和落盘体积；需要跳过 install 时显式加 `--skip-user-app-install`。
+   - **Modern 用户 app 视角**：默认从 create 模板生成一个 user app fixture，并在该 fixture 内独立 install，输出用户应用依赖问题、重复版本、安装耗时和落盘体积；fixture 默认复用 `.agents/runs/dependency-audit/user-app-fixture`，需要保留当次现场时显式加 `--keep-user-app-fixture`，需要跳过 install 时显式加 `--skip-user-app-install`。
 2. **按需聚焦单包**：
    ```bash
    node skills/dependency-audit/scripts/audit.mjs packages/solutions/app-tools
@@ -34,6 +34,7 @@ user-invocable: true
    node skills/dependency-audit/scripts/audit.mjs --json
    node skills/dependency-audit/scripts/audit.mjs --fail-on-findings
    node skills/dependency-audit/scripts/audit.mjs --skip-user-app-install
+   node skills/dependency-audit/scripts/audit.mjs --keep-user-app-fixture
    ```
 4. **解读 & 给修复**：
    - 幽灵依赖 → 补 `package.json` 声明，或移除多余 import；**不手改 lockfile**。
