@@ -35,6 +35,63 @@ const readText = file => {
   }
 };
 const exists = (...p) => fs.existsSync(path.join(...p));
+
+// 只剥离注释、保留字符串原样（等长），用于信号/特征匹配。import 路径本身是字符串，不能被
+// mask 掉；但注释里的 runtime / appTools({ bundler }) / applyBaseConfig 不应参与匹配。
+// 字符串内的 // 不当注释处理。
+function maskComments(code) {
+  let out = '';
+  const n = code.length;
+  let i = 0;
+  while (i < n) {
+    const c = code[i];
+    const c2 = code[i + 1];
+    if (c === '/' && c2 === '/') {
+      out += '  ';
+      i += 2;
+      while (i < n && code[i] !== '\n') {
+        out += ' ';
+        i += 1;
+      }
+      continue;
+    }
+    if (c === '/' && c2 === '*') {
+      out += '  ';
+      i += 2;
+      while (i < n && !(code[i] === '*' && code[i + 1] === '/')) {
+        out += code[i] === '\n' ? '\n' : ' ';
+        i += 1;
+      }
+      if (i < n) {
+        out += '  ';
+        i += 2;
+      }
+      continue;
+    }
+    if (c === '"' || c === "'" || c === '`') {
+      const quote = c;
+      out += c;
+      i += 1;
+      while (i < n && code[i] !== quote) {
+        if (code[i] === '\\') {
+          out += code[i] + (code[i + 1] ?? '');
+          i += 2;
+          continue;
+        }
+        out += code[i];
+        i += 1;
+      }
+      if (i < n) {
+        out += quote;
+        i += 1;
+      }
+      continue;
+    }
+    out += c;
+    i += 1;
+  }
+  return out;
+}
 const majorOf = v => {
   const m = String(v ?? '').match(/(\d+)/);
   return m ? Number(m[1]) : null;
@@ -115,8 +172,9 @@ function main() {
     appToolsVersion != null &&
     WORKSPACE_PROTO.test(String(appToolsVersion).trim());
   const configFile = detectConfigFile(projectDir);
+  // 剥离注释/字符串后再做特征与信号匹配，避免注释里的配置字面量误导
   const configText = configFile
-    ? readText(path.join(projectDir, configFile))
+    ? maskComments(readText(path.join(projectDir, configFile)))
     : '';
 
   // 阻断判断
@@ -138,7 +196,8 @@ function main() {
     .concat(collectSources(path.join(projectDir, 'server')))
     .concat(collectSources(path.join(projectDir, 'api')));
   const rel = f => path.relative(projectDir, f);
-  const grep = re => files.filter(f => re.test(readText(f))).map(rel);
+  const grep = re =>
+    files.filter(f => re.test(maskComments(readText(f)))).map(rel);
 
   const src = path.join(projectDir, 'src');
   // 入口类型

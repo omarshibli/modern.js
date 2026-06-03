@@ -653,6 +653,60 @@ try {
     ),
   );
 
+  // C18. blocker：注释里的 defineConfig 不参与定位/信号，真实配置正确迁移、注释不被改坏
+  console.log(
+    '== C18. v2-edge-config-comment (comment defineConfig not parsed) ==',
+  );
+  const cc = prepare('v2-edge-config-comment');
+  const ccRt = cc.has('src/modern.runtime.ts')
+    ? cc.read('src/modern.runtime.ts')
+    : '';
+  check(
+    'runtime.ts 取真实 config 的 router:true（非注释里的 false）',
+    /router:\s*true/.test(ccRt) && !/router:\s*false/.test(ccRt),
+  );
+  const ccCfg = cc.read('modern.config.ts');
+  check(
+    '真实 config runtime 块已移除（仅注释里残留 1 处 runtime:）',
+    (ccCfg.match(/runtime\s*:/g) || []).length === 1,
+  );
+  check(
+    '注释原样保留（仍含 router: false / bundler webpack）',
+    ccCfg.includes('router: false') && ccCfg.includes("bundler: 'webpack'"),
+  );
+  check(
+    '不被注释里的 webpack 触发误报 manual',
+    !/webpack 自定义配置/.test(cc.report().manual.join('\n')),
+  );
+
+  // C19. blocker：workspace 项目补 plugin-bff 沿用 workspace 协议（不写固定 3.0.0）
+  console.log(
+    '== C19. v2-edge-workspace-bff-mapdep (mapped dep keeps protocol) ==',
+  );
+  const wb = prepare('v2-edge-workspace-bff-mapdep');
+  const wbDeps = JSON.parse(wb.read('package.json')).dependencies;
+  check(
+    '新增 @modern-js/plugin-bff 沿用 workspace:*（非 3.0.0）',
+    wbDeps['@modern-js/plugin-bff'] === 'workspace:*',
+  );
+  check(
+    '既有 @modern-js/runtime 仍 workspace:*',
+    wbDeps['@modern-js/runtime'] === 'workspace:*',
+  );
+  check('未引入任何固定 3.0.0', !/3\.0\.0/.test(wb.read('package.json')));
+
+  // C20. blocker：workspace 项目补 server-runtime 沿用 workspace 协议
+  console.log(
+    '== C20. v2-edge-workspace-server-mapdep (mapped dep keeps protocol) ==',
+  );
+  const ws = prepare('v2-edge-workspace-server-mapdep');
+  const wsDeps = JSON.parse(ws.read('package.json')).dependencies;
+  check(
+    '新增 @modern-js/server-runtime 沿用 workspace:*（非 3.0.0）',
+    wsDeps['@modern-js/server-runtime'] === 'workspace:*',
+  );
+  check('未引入任何固定 3.0.0', !/3\.0\.0/.test(ws.read('package.json')));
+
   console.log(`\n结果：${pass} 通过 / ${fail} 失败`);
   if (fail > 0) process.exit(1);
   console.log('✅ migrate-to-v3 skill 迁移验证通过');

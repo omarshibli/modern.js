@@ -53,14 +53,128 @@ function collectSources(dir, files = []) {
   return files;
 }
 
-// 取对象字面量 `{...}` 的顶层属性片段（忽略嵌套），用于只识别顶层字段
+// 把注释（//、/* */）和字符串/模板字面量的**内容**替换为等长空白（保留换行、引号、长度
+// 与字符索引 1:1）。所有结构定位（配置对象、括号配平、顶层逗号、信号匹配）都基于 masked，
+// 但真实内容仍按相同索引从原文取——避免注释/字符串里的 defineConfig({...}) / { } / 逗号 误导。
+function maskCommentsAndStrings(code) {
+  let out = '';
+  const n = code.length;
+  let i = 0;
+  while (i < n) {
+    const c = code[i];
+    const c2 = code[i + 1];
+    if (c === '/' && c2 === '/') {
+      out += '  ';
+      i += 2;
+      while (i < n && code[i] !== '\n') {
+        out += ' ';
+        i += 1;
+      }
+      continue;
+    }
+    if (c === '/' && c2 === '*') {
+      out += '  ';
+      i += 2;
+      while (i < n && !(code[i] === '*' && code[i + 1] === '/')) {
+        out += code[i] === '\n' ? '\n' : ' ';
+        i += 1;
+      }
+      if (i < n) {
+        out += '  ';
+        i += 2;
+      }
+      continue;
+    }
+    if (c === '"' || c === "'" || c === '`') {
+      const quote = c;
+      out += c;
+      i += 1;
+      while (i < n && code[i] !== quote) {
+        if (code[i] === '\\') {
+          out += '  ';
+          i += 2;
+          continue;
+        }
+        out += code[i] === '\n' ? '\n' : ' ';
+        i += 1;
+      }
+      if (i < n) {
+        out += quote;
+        i += 1;
+      }
+      continue;
+    }
+    out += c;
+    i += 1;
+  }
+  return out;
+}
+
+// 只剥离注释、**保留字符串原样**（等长），用于信号/特征匹配——import 路径本身是字符串，
+// 不能被 mask 掉；但注释里的字面量不应参与匹配。字符串内的 // 不当注释处理。
+function maskComments(code) {
+  let out = '';
+  const n = code.length;
+  let i = 0;
+  while (i < n) {
+    const c = code[i];
+    const c2 = code[i + 1];
+    if (c === '/' && c2 === '/') {
+      out += '  ';
+      i += 2;
+      while (i < n && code[i] !== '\n') {
+        out += ' ';
+        i += 1;
+      }
+      continue;
+    }
+    if (c === '/' && c2 === '*') {
+      out += '  ';
+      i += 2;
+      while (i < n && !(code[i] === '*' && code[i + 1] === '/')) {
+        out += code[i] === '\n' ? '\n' : ' ';
+        i += 1;
+      }
+      if (i < n) {
+        out += '  ';
+        i += 2;
+      }
+      continue;
+    }
+    if (c === '"' || c === "'" || c === '`') {
+      const quote = c;
+      out += c;
+      i += 1;
+      while (i < n && code[i] !== quote) {
+        if (code[i] === '\\') {
+          out += code[i] + (code[i + 1] ?? '');
+          i += 2;
+          continue;
+        }
+        out += code[i];
+        i += 1;
+      }
+      if (i < n) {
+        out += quote;
+        i += 1;
+      }
+      continue;
+    }
+    out += c;
+    i += 1;
+  }
+  return out;
+}
+
+// 取对象字面量 `{...}` 的顶层属性片段（忽略嵌套/注释/字符串），用于只识别顶层字段
 function topLevelProps(body) {
   const inner = body.slice(1, -1);
+  const masked = maskCommentsAndStrings(inner); // 与 inner 等长，定位用
   const parts = [];
   let depth = 0;
   let start = 0;
-  for (let i = 0; i < inner.length; i++) {
-    const ch = inner[i];
+  for (let i = 0; i < masked.length; i++) {
+    const ch = masked[i];
     if (ch === '{' || ch === '[' || ch === '(') depth += 1;
     else if (ch === '}' || ch === ']' || ch === ')') depth -= 1;
     else if (ch === ',' && depth === 0) {
@@ -72,11 +186,13 @@ function topLevelProps(body) {
   return parts.map(p => p.trim()).filter(Boolean);
 }
 
-// 从 `key = {` 之后做花括号配平，返回对象字面量文本与结束位置
-function extractBalanced(text, startIdx) {
+// 从 `{` 处做花括号配平（忽略注释/字符串里的花括号），返回对象字面量文本与结束位置。
+// 配平基于 masked，body 仍取原文。
+function extractBalanced(text, startIdx, maskedText) {
+  const masked = maskedText ?? maskCommentsAndStrings(text);
   let depth = 0;
   for (let i = startIdx; i < text.length; i++) {
-    const c = text[i];
+    const c = masked[i];
     if (c === '{') depth++;
     else if (c === '}') {
       depth--;
@@ -88,13 +204,15 @@ function extractBalanced(text, startIdx) {
 
 // 定位顶层配置对象字面量的起始 `{` 下标，兼容：
 //   defineConfig({  /  defineConfig<'rspack'>({  /  export default {  /  module.exports = {
+// 在 masked（注释/字符串已剥离）上匹配，索引对原文有效。
 // 函数式/动态（defineConfig(() => ({...}))）返回 -1，交调用方走 manual。
-function locateConfigObjStart(code) {
-  const dcObj = code.match(/defineConfig\s*(?:<[^>]*>)?\s*\(\s*\{/);
+function locateConfigObjStart(code, maskedText) {
+  const masked = maskedText ?? maskCommentsAndStrings(code);
+  const dcObj = masked.match(/defineConfig\s*(?:<[^>]*>)?\s*\(\s*\{/);
   if (dcObj) return dcObj.index + dcObj[0].length - 1;
-  const ed = code.match(/export\s+default\s*\{/);
+  const ed = masked.match(/export\s+default\s*\{/);
   if (ed) return ed.index + ed[0].length - 1;
-  const me = code.match(/module\.exports\s*=\s*\{/);
+  const me = masked.match(/module\.exports\s*=\s*\{/);
   if (me) return me.index + me[0].length - 1;
   return -1;
 }
@@ -194,25 +312,31 @@ function migrateImportPaths(files) {
   return flags;
 }
 
-// import 改到新包后，补充对应依赖（与 app-tools 同版本），否则 install/build 失败
+// import 改到新包后，补充对应依赖，否则 install/build 失败。
+// 版本沿用现有 @modern-js 依赖的协议：app-tools / runtime 是 workspace/link/catalog 等协议时，
+// 新补依赖也用同协议（随 monorepo 升级），不写固定 toVersion，避免 workspace 项目混入固定包。
 function ensureMappedDeps(dir, toVersion, flags) {
-  const hasDep = (pkg, name) =>
-    Boolean(pkg.dependencies?.[name] || pkg.devDependencies?.[name]);
+  const verOf = (pkg, name) =>
+    pkg.dependencies?.[name] ?? pkg.devDependencies?.[name];
   const file = path.join(dir, 'package.json');
   const pkg = JSON.parse(readText(file));
   pkg.dependencies = pkg.dependencies || {};
+  // 参考协议：优先 app-tools，其次 runtime
+  const refVer =
+    verOf(pkg, '@modern-js/app-tools') ?? verOf(pkg, '@modern-js/runtime');
+  const addVer = isWorkspaceProto(refVer) ? refVer : toVersion;
   const added = [];
-  if (flags.bff && !hasDep(pkg, '@modern-js/plugin-bff')) {
-    pkg.dependencies['@modern-js/plugin-bff'] = toVersion;
+  if (flags.bff && verOf(pkg, '@modern-js/plugin-bff') == null) {
+    pkg.dependencies['@modern-js/plugin-bff'] = addVer;
     added.push('@modern-js/plugin-bff');
   }
-  if (flags.server && !hasDep(pkg, '@modern-js/server-runtime')) {
-    pkg.dependencies['@modern-js/server-runtime'] = toVersion;
+  if (flags.server && verOf(pkg, '@modern-js/server-runtime') == null) {
+    pkg.dependencies['@modern-js/server-runtime'] = addVer;
     added.push('@modern-js/server-runtime');
   }
   if (added.length) {
     fs.writeFileSync(file, `${JSON.stringify(pkg, null, 2)}\n`);
-    note(changed, `补充依赖：${added.join(', ')}`);
+    note(changed, `补充依赖（${addVer}）：${added.join(', ')}`);
   }
 }
 
@@ -230,7 +354,7 @@ function addBffPlugin(dir, flags) {
 
   // applyBaseConfig 包装的配置（integration helper / 非标准用户配置）：结构性改写交人工，
   // 统一由 migrateRuntimeBlock 记 manual，这里直接跳过，避免半自动改坏顶层 plugins
-  if (/\bapplyBaseConfig\s*\(/.test(code)) return;
+  if (/\bapplyBaseConfig\s*\(/.test(maskCommentsAndStrings(code))) return;
 
   // 识别已有 @modern-js/plugin-bff import（单/双引号皆可），取 bffPlugin 的本地名（含 alias）
   const importMatch = code.match(
@@ -355,7 +479,7 @@ function migrateConfig(dir) {
 
   // applyBaseConfig 包装：dev.port 这类结构性迁移交人工（由 migrateRuntimeBlock 统一记 manual），
   // 这里只做 tailwind 等安全的文本级移除
-  const wrapped = /\bapplyBaseConfig\s*\(/.test(code);
+  const wrapped = /\bapplyBaseConfig\s*\(/.test(maskCommentsAndStrings(code));
 
   // dev.port -> server.port：只移动 port，保留 dev 块其余配置；解析不了则进人工清单
   const devMatch = wrapped ? null : code.match(/\bdev\s*:\s*\{/);
@@ -418,14 +542,15 @@ function migrateConfig(dir) {
 // 从 `appTools(...)` 调用里**只删 bundler 参数**（v3 默认 Rspack，不再接受 bundler），
 // 保留其它选项与别的 plugin 参数；返回 {code, changed}
 function stripAppToolsBundler(code) {
-  const m = code.match(/\bappTools\s*\(/);
+  const masked = maskCommentsAndStrings(code);
+  const m = masked.match(/\bappTools\s*\(/);
   if (!m) return { code, changed: false };
   const open = m.index + m[0].length - 1; // '(' 的下标
   let depth = 0;
   let close = -1;
-  for (let i = open; i < code.length; i++) {
-    if (code[i] === '(') depth += 1;
-    else if (code[i] === ')') {
+  for (let i = open; i < masked.length; i++) {
+    if (masked[i] === '(') depth += 1;
+    else if (masked[i] === ')') {
       depth -= 1;
       if (depth === 0) {
         close = i;
@@ -497,7 +622,8 @@ function migrateRuntimeBlock(dir) {
   // applyBaseConfig 是仓库 integration 测试 helper / 非标准用户配置包装：结构性迁移
   // （runtime / plugins / dev.port / appTools bundler）一律交人工，避免半自动改坏。
   // 文件级安全改写（依赖升级 / import 路径 / tailwind 移除）仍由其它步骤完成。
-  if (/\bapplyBaseConfig\s*\(/.test(code)) {
+  // 检测一律在 masked（剥离注释/字符串）上做，避免注释里的 applyBaseConfig/runtime 误触发。
+  if (/\bapplyBaseConfig\s*\(/.test(maskCommentsAndStrings(code))) {
     note(
       manual,
       '⚠️ 结构迁移未完成：modern.config 用 applyBaseConfig(...)（integration 测试 helper / 非标准配置包装）包裹。runtime / plugins / dev.port / appTools({ bundler }) 等结构性迁移需先人工展开为 defineConfig 再处理；本次仅完成依赖升级 / import 路径 / tailwind 等文件级安全改写，配置结构尚未迁移到 v3。',
@@ -515,10 +641,11 @@ function migrateRuntimeBlock(dir) {
 
   // (b) 顶层 runtime 块 → modern.runtime.ts
   // locateConfigObjStart 兼容 defineConfig({ / defineConfig<...>({ / export default { / module.exports = {
-  const objStart = locateConfigObjStart(code);
+  const masked = maskCommentsAndStrings(code);
+  const objStart = locateConfigObjStart(code, masked);
   if (objStart === -1) {
     // 函数式 / 动态 defineConfig(() => ({...}))：runtime 无法安全静态搬运
-    if (/\bruntime\s*:/.test(code)) {
+    if (/\bruntime\s*:/.test(masked)) {
       note(
         manual,
         'modern.config 使用函数式/动态配置且含 runtime：需人工迁到 modern.runtime.ts（见 references/migrate-entry.md）',
@@ -527,7 +654,7 @@ function migrateRuntimeBlock(dir) {
     if (touched) fs.writeFileSync(file, code);
     return;
   }
-  const obj = extractBalanced(code, objStart);
+  const obj = extractBalanced(code, objStart, masked);
   if (!obj) {
     if (touched) fs.writeFileSync(file, code);
     return;
@@ -813,7 +940,10 @@ function flagManual(dir, reactMajor) {
     'modern.config.mjs',
     'modern.config.cjs',
   ].find(f => exists(dir, f));
-  const configText = configFile ? readText(path.join(dir, configFile)) : '';
+  // 用 maskComments：注释里的 ssr/appIcon/webpack 等不应触发人工项
+  const configText = configFile
+    ? maskComments(readText(path.join(dir, configFile)))
+    : '';
   if (exists(dir, 'server', 'index.ts') || exists(dir, 'server', 'index.js')) {
     note(
       manual,
@@ -867,7 +997,11 @@ function detectV2Signals(dir, pkg) {
     'modern.config.mjs',
     'modern.config.cjs',
   ].find(f => exists(dir, f));
-  const configText = configFile ? readText(path.join(dir, configFile)) : '';
+  // 用 maskComments（只剥注释、保留字符串）：注释里的 runtime/applyBaseConfig 不当信号，
+  // 但 import 路径（字符串）必须保留，否则 @modern-js/runtime/bff 等信号会被误删
+  const configText = configFile
+    ? maskComments(readText(path.join(dir, configFile)))
+    : '';
   const deps = {
     ...pkg.dependencies,
     ...pkg.devDependencies,
@@ -876,7 +1010,7 @@ function detectV2Signals(dir, pkg) {
   const files = collectSources(path.join(dir, 'src'))
     .concat(collectSources(path.join(dir, 'server')))
     .concat(collectSources(path.join(dir, 'api')));
-  const anyFile = re => files.some(f => re.test(readText(f)));
+  const anyFile = re => files.some(f => re.test(maskComments(readText(f))));
   const signals = [];
   if (/\bruntime\s*:/.test(configText))
     signals.push('modern.config 顶层 runtime');
