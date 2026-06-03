@@ -1,58 +1,92 @@
 ---
 name: modernjs-migrate-to-v3
-description: 把一个 Modern.js v2 应用迁移到 v3。在「升级 Modern.js 大版本、modern.config 报废弃警告、要从 webpack/React17/pages 目录迁到 Rspack/React19/routes、自定义 server 报错」时使用。首版只做安全改写，复杂项进人工清单并产出迁移报告。
-user-invocable: true
+description: 将一个 Modern.js 2.0 应用迁移到 3.0，优先做可安全自动化的依赖/配置/入口/import 改写，剩余复杂项收敛为人工清单。在「升级 Modern.js 大版本、modern.config 报废弃、要从 webpack/pages 迁到 Rspack/routes、自定义 server 报错」时使用。
 ---
 
-# modernjs-migrate-to-v3
+# Migrate Modern.js 2.0 to 3.0
 
-把 **Modern.js 2.0 应用**迁移到 **3.0**。原则：**先扫描、出清单、安全改写、复杂项进人工清单**，每批跑校验、可回滚，全程产出可复核的依据。
+本 skill 用于单个 Modern.js 应用的 v2→v3 迁移。目标：完成可安全改写的部分，剩余风险收敛成明确人工清单。规则与示例以仓库 `guides/upgrade/*` 的真实文档为准。
 
-> 仅适用于「使用 Modern.js 开发的应用项目」。本仓库（Modern.js 框架本身）已是 v3，不要对它跑。
+## 使用原则
 
-## SOP（务必按顺序）
+- 调用方先确定 `projectDir`，所有修改仅限 `projectDir`
+- 不在开始时读取全部 `references/`；仅在命中人工项时按需加载
+- 每个成功步骤结束后提交一次（见 `references/commit-changes.md`）
 
-1. **前置检查**：确认当前是 v2、React ≥17、Node ≥18.20.8（推荐 22+）。建议在干净的 git worktree 上进行，便于回滚。
-2. **扫描**：跑 `scripts/scan.mjs <项目根>`，产出
-   `<项目根>/.agents/runs/modernjs-migrate/context.json`（扫描结果 + 每项分类）+ 终端报告。**不要只改代码不给依据。**
-3. **分批迁移**（每批做完跑 `pnpm install` → `modern build`（必要时 `test`）→ 通过再进下一批；不过就回滚该批）：
-   - 批 1 依赖：把所有 `@modern-js/**` 统一升到 v3（固定版本号，不用 `^`/`~`）。
-   - 批 2 安全改写（见下「自动」）。
-   - 批 3 半自动（见下「半自动」，仅结构简单时改写）。
-   - 批 4 人工清单（见下「人工」）。
-4. **验证**：`modern build` 通过 + 关键路由/页面 smoke。
-5. **报告**：更新 context.json 的处理结果 + 写一份「改了什么 / 为什么 / 待人工项」报告。
+## 输出要求
 
-## 分类（依据 = 官方 v2→v3 文档，详见 `references/v2-to-v3.md`）
+- 进度简短：`[X/6] 开始/完成/跳过/失败`
+- 非阻断问题记录后继续；阻断问题立即停止并说明步骤、原因、恢复方式
 
-### 自动（安全、机械，可 `scan.mjs --write` 或逐条 guided 改）
-- **import 路径映射**：`@modern-js/runtime/bff` → `@modern-js/plugin-bff/runtime`；`@modern-js/runtime/server` → `@modern-js/server-runtime`。（`scan.mjs --write` 已实现这一项，纯 specifier 替换）
-- **依赖版本**：`@modern-js/**` 统一升 v3。
-- **`dev.port` → `server.port`**（配置项重命名）。
-- **Tailwind**：移除 `@modern-js/plugin-tailwindcss`，改 Rsbuild 原生 + `postcss.config.cjs` + `@tailwind` 指令。
-- **SSR mode 风险提示**：默认 `'string'`→`'stream'`；React17 项目需手动设回 `'string'`。
+## 前置检查
 
-### 半自动（仅结构简单时改写，复杂进人工清单）
-- **`src/pages` → `src/routes`**（v3 不再支持 pages 约定式路由）：简单静态结构可安全重命名 + 改引用；复杂/动态路由进人工。
-- **自定义入口 `src/index.tsx` → `src/entry.tsx`** + bootstrap 函数 → `createRoot()` + `render()`。
-- **`App.config` / `App.init`、`routes/layout.tsx` 的 `config`/`init` 导出** → `src/modern.runtime.ts`（`defineRuntimeConfig` / 运行时插件）。注意：v3 **不再支持在 `modern.config.ts` 配 runtime**。
-- **`useRuntimeContext()` → `use(RuntimeContext)`**（`isBrowser` 移到返回值顶层）：简单调用可改，复杂解构进人工。
+```bash
+git -C <projectDir> status --porcelain
+```
 
-### 人工清单（首版不自动，列出让人确认）
-- **自定义 Web Server**：`server/index.ts` → `server/modern.server.ts`；`unstableMiddleware` 数组 → `defineServerConfig({ middlewares })`；Server Context → Hono Context（`c.req`/`c.res`，见 references 对照表）；**中间件现在必须调用 `next()`**；`afterRender` hook → `renderMiddlewares`。语义变化大，务必人工。
-- **多入口**的 runtime 配置合并（函数式 `defineRuntimeConfig(entryName => ...)`）。
-- **webpack 自定义配置/插件** → Rspack 对应项（多数兼容，但自定义插件需确认）。
-- **React Router v7** 不兼容点、**React 19** 相关。
-- **`html.appIcon`** 字符串 → 对象格式。
+工作区非空时停止，提示先 `git commit`/`git stash`。建议在干净分支或 worktree 上迁移，便于回滚。
+
+## 执行步骤
+
+### 步骤 1：扫描项目，生成迁移上下文
+
+```bash
+node scripts/scan-project.mjs <projectDir>
+```
+
+产出 `<projectDir>/.agents/runs/modernjs-migrate/context.json`：判定 v2/v3、Node 版本、入口类型、命中的 `features`。脚本失败（非 v2/v3、Node 过低）时直接停止并展示原因。`migrationState=v3` 按续迁移处理。
+
+### 步骤 2：执行可安全自动化的改写
+
+```bash
+node scripts/migrate.mjs <projectDir> --to=<目标版本>
+```
+
+自动完成（依据 `guides/upgrade/*`）：
+
+- **依赖**：`@modern-js/*` 统一升到目标版本（固定版本号）；移除 `@modern-js/plugin-tailwindcss`
+- **import 路径**：`@modern-js/runtime/bff`→`@modern-js/plugin-bff/runtime`、`@modern-js/runtime/server`→`@modern-js/server-runtime`
+- **配置**：`dev.port`→`server.port`；移除 tailwind 插件并写 `postcss.config.cjs`
+- **入口**：`src/index.*`→`src/entry.*`（bootstrap 函数改写为 `createRoot()`/`render()`）；`App.config` 抽取到 `src/modern.runtime.ts`
+- **运行时**：`useRuntimeContext()`→`use(RuntimeContext)`
+- **路由**：`src/pages`→`src/routes`（无 routes 时）
+
+完成后查看 `.agents/runs/modernjs-migrate/report.json` 的 `changed` / `manual`。本步骤成功后执行 `references/commit-changes.md`。
+
+### 步骤 3：按人工清单逐项处理（按需读 references）
+
+依据 report 的 `manual` 列表，命中哪项读哪份：
+
+| 人工项 | 参考 |
+| --- | --- |
+| `App.init` / `routes/layout` 的 `config`/`init` 导出 | `references/migrate-entry.md` |
+| 自定义 Web Server（`unstableMiddleware` / `afterRender`） | `references/migrate-custom-server.md` |
+| `html.appIcon` 字符串、`server.ssr.mode`、webpack 自定义配置 | `references/migrate-config.md` |
+
+每处理完一项执行 `references/commit-changes.md`。
+
+### 步骤 4：安装依赖
+
+```bash
+bash scripts/install-deps.sh <projectDir>
+```
+
+锁文件变更后执行 `references/commit-changes.md`（带 `--include-lockfiles`）。
+
+### 步骤 5：Lint 自动修复
+
+```bash
+bash scripts/run-lint.sh <projectDir>
+```
+
+失败记录后继续，不视为迁移失败。
+
+### 步骤 6：构建验证 + 最终报告
+
+跑 `modern build`（必要时关键路由 smoke）。最终报告：成功步骤、跳过项、失败项、人工处理项、后续建议。
 
 ## 安全红线
-- 改写**优先 AST/结构化**；纯文本替换只用于无歧义项（如 import 路径映射）。
+
+- 改写优先结构化；纯文本替换仅用于无歧义项（import 路径）。
 - **不手改** `pnpm-lock.yaml` / `dist` / `CHANGELOG` / `node_modules` / secret。
-- 每批后跑校验，能回滚（干净 worktree / 分支）。
-- 复杂、不确定的一律进人工清单，不盲目改。
-
-## 产物（强制）
-- `<项目根>/.agents/runs/modernjs-migrate/context.json`：扫描结果 + 每项分类 + 处理状态。
-- 最终迁移报告：改了什么 / 为什么 / 待人工项。
-
-更多权威细节让 Agent 检索 `https://modernjs.dev/llms.txt` 或仓库 `guides/upgrade/*`。
+- 复杂、不确定项一律进人工清单，不盲目改。

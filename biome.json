@@ -117,7 +117,8 @@
       "packages/cli/flight-server-transform-plugin/tests/fixture/**/*",
       "**/@mf-types/**",
       "packages/toolkit/create/template/**/*",
-      "ai-eval/fixtures/**/*"
+      "ai-eval/fixtures/**/*",
+      "tests/skill/fixtures/**/*"
     ]
   }
 }
