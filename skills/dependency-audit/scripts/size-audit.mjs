@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// modernjs-dependency-audit — 安装体积 & 耗时归因（数据优先，不做推断）
+// dependency-audit — 安装体积 & 耗时归因（数据优先，不做推断）
 //
 // 用法：node size-audit.mjs [target-dir] [--json] [--top=N]
 //
@@ -44,10 +44,13 @@ function findLockfile(dir) {
 // 向上找含 node_modules 的安装根（pnpm workspace 下包在 packages/<x>，装在仓库根）
 function findInstallRoot(dir) {
   let cur = dir;
+  let fallback = null;
   for (;;) {
-    if (fs.existsSync(path.join(cur, 'node_modules'))) return cur;
+    const nodeModules = path.join(cur, 'node_modules');
+    if (fs.existsSync(path.join(nodeModules, '.pnpm'))) return cur;
+    if (!fallback && fs.existsSync(nodeModules)) fallback = cur;
     const parent = path.dirname(cur);
-    if (parent === cur) return null;
+    if (parent === cur) return fallback;
     cur = parent;
   }
 }

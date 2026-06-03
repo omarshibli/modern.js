@@ -21,16 +21,16 @@
 - **路由**：仓库根 `AGENTS.md` 负责告诉 agent 何时用哪个 maintainer skill + 验证命令。
 - 同步命令：
   ```bash
-  node scripts/sync-maintainer-skills.mjs --target=codex
-  node scripts/sync-maintainer-skills.mjs --target=all
+  pnpm sync:skills --target=codex
+  pnpm sync:skills --target=all
   ```
-- 已落地：`modernjs-dependency-audit`。
+- 已落地：`dependency-audit`。
 - 规划中（P1+）：`modernjs-issue-triage`、`modernjs-pr-review`、`modernjs-test-selector`。
 
 ```
 skills/<skill>/                   # 唯一手写源（仓库根）
   SKILL.md  references/  scripts/
-        │  node scripts/sync-maintainer-skills.mjs（生成软链）
+        │  pnpm sync:skills（生成软链）
         ▼
 .claude/skills/<skill>/   .agents/skills/<skill>/   .cursor/skills/<skill>/   # 派生镜像，.gitignore 忽略
 ```
@@ -55,10 +55,15 @@ skills/<skill>/                   # 唯一手写源（仓库根）
 每个 Skill 遵循 [Agent Skills 开放标准](https://github.com/vercel-labs/next-skills)：
 
 ```
-skills/<maintainer|user>/<skill-name>/
+skills/<skill-name>/                     # 维护者内部 Skill
   SKILL.md        # frontmatter: name / description / user-invocable
   references/     # 版本化参考资料（如 v2→v3 breaking changes）
   scripts/        # 可执行脚本（AST codemod / 检测器等）
+
+packages/toolkit/skills/catalog/<skill-name>/  # 用户向可分发 Skill
+  SKILL.md
+  references/
+  scripts/
 ```
 
 ## 与 create 的关系

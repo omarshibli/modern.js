@@ -26,10 +26,10 @@ npx @modern-js/skills add modernjs-migrate-to-v3 --target=claude,codex --dir=.
 | `modernjs-migrate-to-v3` | v2 → v3 迁移：扫描产出 context.json + 迁移清单（自动/半自动/人工分类），安全改写 import 路径映射 |
 
 > 更多**用户向** Skill（`modernjs-feature-enable` 等）实现中，完成后会加入此包。
-> 注：`modernjs-dependency-audit`、`modernjs-issue-triage` 是**维护者内部** Skill，由仓库根脚本同步到 `.claude/.agents/.cursor`，**不进入本分发包**。
+> 注：`dependency-audit`、`modernjs-issue-triage` 是**维护者内部** Skill，由仓库根脚本同步到 `.claude/.agents/.cursor`，**不进入本分发包**。
 
 ## Skill 源与维护者 Skill
 
 - **用户向 Skill** 的手写源就在本包 `catalog/<skill>/`（直接编辑、随包发布，无需额外同步步骤）。
-- **维护者内部 Skill**（如 `modernjs-dependency-audit`）手写源在仓库根 `skills/<skill>/`，**不进入本包**；维护者用 `node scripts/sync-maintainer-skills.mjs`（不带 `--target` 会交互式选 Agent）同步到本仓的 `.claude/.agents/.cursor/skills`。
+- **维护者内部 Skill**（如 `dependency-audit`）手写源在仓库根 `skills/<skill>/`，**不进入本包**；维护者用 `pnpm sync:skills`（不带 `--target` 会交互式选 Agent）同步到本仓的 `.claude/.agents/.cursor/skills`。
 - `.claude/skills`、`.agents/skills`、`.cursor/skills` 都是安装产物，不是手写源。

@@ -20,7 +20,7 @@ function usage() {
   console.log(`Sync Modern.js maintainer skills into agent tool directories.
 
 Usage:
-  node scripts/sync-maintainer-skills.mjs [--target=claude|codex|cursor|all] [--dry-run]
+  node scripts/sync-skills.mjs [--target=claude|codex|cursor|all] [--dry-run]
 
 不带 --target 且在终端运行时，会交互式让你选择目标 Agent 目录；非交互环境默认 all.`);
 }
