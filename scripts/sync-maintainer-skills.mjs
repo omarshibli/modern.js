@@ -3,10 +3,12 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import process from 'node:process';
+import readline from 'node:readline';
 import { fileURLToPath } from 'node:url';
 
 const REPO_ROOT = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
-const SOURCE_DIR = path.join(REPO_ROOT, 'skills/maintainer');
+// 维护者内部 skill 直接放在仓库 skills/ 下（仅含 SKILL.md 的目录会被识别，README.md 等跳过）
+const SOURCE_DIR = path.join(REPO_ROOT, 'skills');
 
 const TARGETS = {
   claude: '.claude/skills',
@@ -20,12 +22,13 @@ function usage() {
 Usage:
   node scripts/sync-maintainer-skills.mjs [--target=claude|codex|cursor|all] [--dry-run]
 
-Defaults to --target=all.`);
+不带 --target 且在终端运行时，会交互式让你选择目标 Agent 目录；非交互环境默认 all.`);
 }
 
 function parseArgs(argv) {
   const args = {
     target: 'all',
+    targetExplicit: false,
     dryRun: false,
   };
 
@@ -40,12 +43,30 @@ function parseArgs(argv) {
     }
     if (arg.startsWith('--target=')) {
       args.target = arg.slice('--target='.length);
+      args.targetExplicit = true;
       continue;
     }
     throw new Error(`Unknown argument: ${arg}`);
   }
 
   return args;
+}
+
+// 交互式让开发者选择目标 Agent 目录
+function promptTarget() {
+  const rl = readline.createInterface({
+    input: process.stdin,
+    output: process.stdout,
+  });
+  return new Promise(resolve => {
+    rl.question(
+      '把维护者 skill 同步到哪个 Agent 目录？[claude/codex/cursor/all]（默认 all）: ',
+      answer => {
+        rl.close();
+        resolve(answer.trim() || 'all');
+      },
+    );
+  });
 }
 
 function resolveTargets(target) {
@@ -112,13 +133,16 @@ function syncSkill(skill, targetName, dryRun) {
   );
 }
 
-function main() {
-  const { target, dryRun } = parseArgs(process.argv);
-  const targetNames = resolveTargets(target);
+async function main() {
+  const { target, targetExplicit, dryRun } = parseArgs(process.argv);
+  // 不带 --target 且在终端里运行 → 交互式选择；否则用默认/显式值
+  const chosen =
+    !targetExplicit && process.stdin.isTTY ? await promptTarget() : target;
+  const targetNames = resolveTargets(chosen);
   const skills = listSkillDirs();
 
   if (skills.length === 0) {
-    console.log('No maintainer skills found under skills/maintainer.');
+    console.log('No maintainer skills found under skills/.');
     return;
   }
 
@@ -130,7 +154,7 @@ function main() {
 }
 
 try {
-  main();
+  await main();
 } catch (error) {
   console.error(error instanceof Error ? error.message : String(error));
   process.exit(1);

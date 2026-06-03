@@ -12,10 +12,6 @@
   "license": "MIT",
   "keywords": ["modern.js", "ai", "agent", "skills", "claude", "codex", "cursor"],
   "type": "module",
-  "scripts": {
-    "sync": "node ./scripts/sync-user-skills.mjs",
-    "prepack": "node ./scripts/sync-user-skills.mjs"
-  },
   "bin": {
     "modern-js-skills": "./bin/cli.mjs"
   },

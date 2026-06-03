@@ -8,7 +8,7 @@
 |---|---|---|
 | `llms.txt` | 知识索引（厚、自动生成） | 文档站（rspress `@rspress/plugin-llms`） |
 | `AGENTS.md` | 项目约束 + 路由（薄、常驻） | 仓库根 `AGENTS.md`（维护者向） |
-| **Skills** | 可验证的多步骤流程 | 本目录 `skills/maintainer/*`、`skills/user/*` |
+| **Skills** | 可验证的多步骤流程 | 维护者：仓库根 `skills/*`；用户：`@modern-js/skills` 的 `catalog/*` |
 
 判定法则：**多步骤 + 需脚本/判断/状态 + 高频痛点**三条都满足才做成 Skill；否则沉淀进 `AGENTS.md` 或文档。**不滥造 Skill。**
 
@@ -16,8 +16,8 @@
 
 ### 1. 维护者向（maintainer）—— 服务「开发 Modern.js 仓库」的 agent
 
-- **source of truth**：`skills/maintainer/<skill>/SKILL.md` + `references/` + `scripts/`（单一手写源）。
-- **工具目录是派生产物**：`.claude/skills/`（Claude Code）、`.agents/skills/`（Codex）、`.cursor/skills/`（Cursor）只作为**同步/软链镜像**，由根脚本从 `skills/maintainer/*` 生成，**不作为手写源**（避免两份正文漂移）。这些目录在 `.gitignore` 中（派生物不入库）。
+- **source of truth**：`skills/<skill>/SKILL.md` + `references/` + `scripts/`（单一手写源，直接放仓库根 `skills/` 下）。
+- **工具目录是派生产物**：`.claude/skills/`（Claude Code）、`.agents/skills/`（Codex）、`.cursor/skills/`（Cursor）只作为**同步/软链镜像**，由根脚本从 `skills/*` 生成，**不作为手写源**（避免两份正文漂移）。这些目录在 `.gitignore` 中（派生物不入库）。
 - **路由**：仓库根 `AGENTS.md` 负责告诉 agent 何时用哪个 maintainer skill + 验证命令。
 - 同步命令：
   ```bash
@@ -28,17 +28,17 @@
 - 规划中（P1+）：`modernjs-issue-triage`、`modernjs-pr-review`、`modernjs-test-selector`。
 
 ```
-skills/maintainer/<skill>/        # 唯一手写源
+skills/<skill>/                   # 唯一手写源（仓库根）
   SKILL.md  references/  scripts/
-        │  同步脚本（生成/软链）
+        │  node scripts/sync-maintainer-skills.mjs（生成软链）
         ▼
 .claude/skills/<skill>/   .agents/skills/<skill>/   .cursor/skills/<skill>/   # 派生镜像，.gitignore 忽略
 ```
 
 ### 2. 用户向（user）—— 服务「用 Modern.js 开发应用」的 agent
 
-- **source of truth**：`skills/user/<skill>/...`（或独立 repo），发布时打包成可分发包 **`@modern-js/skills`**（或 marketplace）。
-- **分发包只装用户向 Skill**：`packages/toolkit/skills/catalog/*` 是由 `skills/user/*` 同步出来的发布内容，不放维护者内部 Skill。
+- **source of truth**：就在分发包 `packages/toolkit/skills/catalog/<skill>/`（直接编辑、随 **`@modern-js/skills`** 发布，无需额外同步）。
+- **分发包只装用户向 Skill**：`catalog/*` 即用户向 Skill 的手写源，不放维护者内部 Skill。
 - **不藏在仓库内部目录、不靠 `@modern-js/create` 隐式安装**。
 - **用户显式安装**：
 
@@ -46,10 +46,6 @@ skills/maintainer/<skill>/        # 唯一手写源
   npx @modern-js/skills list                       # 列出可装 skill
   npx @modern-js/skills add modernjs-migrate-to-v3 # 安装单个 skill
   # 支持 --target=claude|codex|cursor|all
-  ```
-- 同步到发布包：
-  ```bash
-  pnpm --filter @modern-js/skills sync
   ```
 - 已落地：`modernjs-migrate-to-v3`。
 - 规划中（P1+）：`modernjs-feature-enable`。
