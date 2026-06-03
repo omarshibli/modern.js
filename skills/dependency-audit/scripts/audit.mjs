@@ -552,6 +552,25 @@ function measureInstallTime(repoRoot) {
   };
 }
 
+function validateInstallResult(installTime, installSize) {
+  if (installTime.measured === false) return installTime;
+
+  const errors = [];
+  if (installTime.error) errors.push(installTime.error);
+  if (installTime.exitCode !== 0) {
+    errors.push(`install exited with code ${installTime.exitCode}`);
+  }
+  if (!installSize.installPresent) {
+    errors.push('install did not create fixture node_modules');
+  }
+
+  return {
+    ...installTime,
+    error: errors.length > 0 ? errors.join('; ') : null,
+    successful: errors.length === 0,
+  };
+}
+
 function buildUserAppReport(repoRoot, options) {
   const appDir = options.userAppDir || prepareGeneratedUserApp(repoRoot);
   const appAudit = auditPackage(appDir);
@@ -563,11 +582,15 @@ function buildUserAppReport(repoRoot, options) {
         command: 'node skills/dependency-audit/scripts/audit.mjs',
       };
   const appSize = installedSizeReport(appDir, options.top, false);
+  const validatedInstallTime = validateInstallResult(installTime, appSize);
   const manifest = readJson(path.join(appDir, 'package.json'));
 
   return {
     fixtureDir: path.relative(repoRoot, appDir),
     generated: !options.userAppDir,
+    workspaceIsolation: options.userAppDir
+      ? 'provided'
+      : 'local-pnpm-workspace',
     manifestSource: path.relative(repoRoot, path.join(appDir, 'package.json')),
     app: {
       packageCount: 1,
@@ -596,7 +619,7 @@ function buildUserAppReport(repoRoot, options) {
     duplicateVersions: fs.existsSync(lockfile)
       ? findDuplicateVersions(lockfile)
       : [],
-    installTime,
+    installTime: validatedInstallTime,
     installSize: {
       installPresent: appSize.installPresent,
       installRoot: appSize.installRoot
@@ -817,15 +840,24 @@ function printPackageReport(report, top) {
   }
 }
 
+function hasInstallFailure(installTime) {
+  return (
+    installTime.measured !== false &&
+    (installTime.exitCode !== 0 || Boolean(installTime.error))
+  );
+}
+
 function hasFindings(report) {
   if (report.mode === 'modernjs-monorepo') {
     return (
       report.maintainer.phantomPackages.length > 0 ||
       report.maintainer.circularPackages.length > 0 ||
       report.maintainer.duplicateVersions.length > 0 ||
+      hasInstallFailure(report.maintainer.installTime) ||
       report.userApp.app.phantomPackages.length > 0 ||
       report.userApp.app.circularPackages.length > 0 ||
-      report.userApp.duplicateVersions.length > 0
+      report.userApp.duplicateVersions.length > 0 ||
+      hasInstallFailure(report.userApp.installTime)
     );
   }
 
