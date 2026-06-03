@@ -167,24 +167,44 @@ function addBffPlugin(dir, flags) {
   if (!configFile) return;
   const file = path.join(dir, configFile);
   let code = readText(file);
-  if (/bffPlugin\s*\(\s*\)/.test(code)) return; // 已有 bffPlugin() 调用
-  if (!code.includes("from '@modern-js/plugin-bff'")) {
+
+  // 识别已有 @modern-js/plugin-bff import（单/双引号皆可），取 bffPlugin 的本地名（含 alias）
+  const importMatch = code.match(
+    /import\s*\{([^}]*)\}\s*from\s*['"]@modern-js\/plugin-bff['"]/,
+  );
+  let localName = 'bffPlugin';
+  const hasImport = Boolean(importMatch);
+  if (importMatch) {
+    const aliasMatch = importMatch[1].match(/\bbffPlugin\b(?:\s+as\s+(\w+))?/);
+    if (!aliasMatch) {
+      note(
+        manual,
+        '已 import @modern-js/plugin-bff 但未导入 bffPlugin，请手动把 bffPlugin() 加进 plugins',
+      );
+      return;
+    }
+    localName = aliasMatch[1] || 'bffPlugin';
+  }
+  // 已经调用了对应插件就跳过
+  if (new RegExp(`\\b${localName}\\s*\\(`).test(code)) return;
+  // 没有 import 才补一行（避免重复 import 造成 duplicate identifier）
+  if (!hasImport) {
     code = code.replace(
       /(import[^\n]*\n)/,
       `$1import { bffPlugin } from '@modern-js/plugin-bff';\n`,
     );
   }
   if (/plugins\s*:\s*\[/.test(code)) {
-    code = code.replace(/plugins\s*:\s*\[/, 'plugins: [bffPlugin(), ');
+    code = code.replace(/plugins\s*:\s*\[/, `plugins: [${localName}(), `);
   } else {
     // 没有 plugins 数组（如 defineConfig({})）→ 注入一个
     code = code.replace(
       /defineConfig\(\s*\{/,
-      'defineConfig({\n  plugins: [bffPlugin()],',
+      `defineConfig({\n  plugins: [${localName}()],`,
     );
   }
-  // 必须确认 bffPlugin() 真的写进去了，否则不能静默成功
-  if (/bffPlugin\s*\(\s*\)/.test(code)) {
+  // 必须确认插件调用真的写进去了，否则不能静默成功
+  if (new RegExp(`${localName}\\s*\\(\\s*\\)`).test(code)) {
     fs.writeFileSync(file, code);
     note(changed, '配置：添加 bffPlugin()');
   } else {

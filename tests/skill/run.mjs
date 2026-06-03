@@ -258,6 +258,16 @@ try {
     /isBrowser/.test(rc.report().manual.join('\n')),
   );
 
+  // ===== 9) 已有 bffPlugin import（双引号）：不能重复 import =====
+  console.log('== v2-edge-bff-dq (existing double-quote bffPlugin import) ==');
+  const bd = prepare('v2-edge-bff-dq');
+  const cfgBd = bd.read('modern.config.ts');
+  check(
+    '不重复 import @modern-js/plugin-bff（只 1 处）',
+    (cfgBd.match(/@modern-js\/plugin-bff/g) || []).length === 1,
+  );
+  check('复用已有 import 加入 bffPlugin()', /bffPlugin\(\)/.test(cfgBd));
+
   console.log(`\n结果：${pass} 通过 / ${fail} 失败`);
   if (fail > 0) process.exit(1);
   console.log('✅ migrate-to-v3 skill 迁移验证通过');
