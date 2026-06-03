@@ -707,6 +707,84 @@ try {
   );
   check('未引入任何固定 3.0.0', !/3\.0\.0/.test(ws.read('package.json')));
 
+  // C21. blocker：link:/file:/npm: 协议不能照搬给映射依赖（会指错路径）→ manual
+  console.log('== C21. v2-edge-link-bff-mapdep (link: protocol → manual) ==');
+  const lk = prepare('v2-edge-link-bff-mapdep');
+  const lkPkgRaw = lk.read('package.json');
+  const lkDeps = JSON.parse(lkPkgRaw).dependencies;
+  check(
+    '未自动新增 @modern-js/plugin-bff（link: 无法照搬）',
+    lkDeps['@modern-js/plugin-bff'] == null,
+  );
+  check(
+    '未把 app-tools 的 link 路径写给别的包',
+    !/"@modern-js\/plugin-bff"\s*:\s*"link:/.test(lkPkgRaw),
+  );
+  check(
+    '既有 link: 依赖原样保留',
+    lkDeps['@modern-js/runtime'] === 'link:../../packages/runtime' &&
+      lkPkgRaw.includes(
+        '"@modern-js/app-tools": "link:../../packages/app-tools"',
+      ),
+  );
+  check(
+    'link: 协议补依赖进 manual（提示手动添加）',
+    /link:.*请手动添加.*plugin-bff/s.test(lk.report().manual.join('\n')),
+  );
+
+  // ============================================================
+  // D2. 负向：v3 workspace app + 字符串里写 legacy 配置示例 → 仍 ambiguous 阻断
+  // ============================================================
+  console.log('== D2. v3-workspace-app-string-literal (string ≠ v2 signal) ==');
+  const negStr = fs.mkdtempSync(path.join(os.tmpdir(), 'mj-negstr-'));
+  tmpDirs.push(negStr);
+  copyDir(
+    path.join(HERE, 'fixtures', 'v3-workspace-app-string-literal'),
+    negStr,
+  );
+  let scanBlocked2 = false;
+  try {
+    execFileSync('node', [path.join(SCRIPTS, 'scan-project.mjs'), negStr], {
+      encoding: 'utf8',
+      stdio: 'pipe',
+    });
+  } catch {
+    scanBlocked2 = true;
+  }
+  check(
+    '[blocking] 字符串里的 legacy 配置不触发 v2 信号 → scan 仍阻断',
+    scanBlocked2,
+  );
+  const negCfgBefore = fs.readFileSync(
+    path.join(negStr, 'modern.config.ts'),
+    'utf8',
+  );
+  let migrateBlocked2 = false;
+  try {
+    execFileSync(
+      'node',
+      [path.join(SCRIPTS, 'migrate.mjs'), negStr, '--to=3.0.0'],
+      {
+        encoding: 'utf8',
+        stdio: 'pipe',
+      },
+    );
+  } catch {
+    migrateBlocked2 = true;
+  }
+  check('[blocking] migrate 仍阻断（二次保护）', migrateBlocked2);
+  check(
+    '[blocking] migrate 未改写 modern.config.ts',
+    fs.readFileSync(path.join(negStr, 'modern.config.ts'), 'utf8') ===
+      negCfgBefore,
+  );
+  check(
+    '[blocking] 未产生 report.json',
+    !fs.existsSync(
+      path.join(negStr, '.agents/runs/modernjs-migrate/report.json'),
+    ),
+  );
+
   console.log(`\n结果：${pass} 通过 / ${fail} 失败`);
   if (fail > 0) process.exit(1);
   console.log('✅ migrate-to-v3 skill 迁移验证通过');

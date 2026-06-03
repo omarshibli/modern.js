@@ -36,10 +36,9 @@ const readText = file => {
 };
 const exists = (...p) => fs.existsSync(path.join(...p));
 
-// 只剥离注释、保留字符串原样（等长），用于信号/特征匹配。import 路径本身是字符串，不能被
-// mask 掉；但注释里的 runtime / appTools({ bundler }) / applyBaseConfig 不应参与匹配。
-// 字符串内的 // 不当注释处理。
-function maskComments(code) {
+// 把注释和字符串内容替换为等长空白（保留换行、引号、长度），用于结构/标识符信号匹配——
+// 普通字符串里的 runtime/appTools({bundler})/applyBaseConfig 不应被当作 v2 信号。
+function maskCommentsAndStrings(code) {
   let out = '';
   const n = code.length;
   let i = 0;
@@ -74,11 +73,11 @@ function maskComments(code) {
       i += 1;
       while (i < n && code[i] !== quote) {
         if (code[i] === '\\') {
-          out += code[i] + (code[i + 1] ?? '');
+          out += '  ';
           i += 2;
           continue;
         }
-        out += code[i];
+        out += code[i] === '\n' ? '\n' : ' ';
         i += 1;
       }
       if (i < n) {
@@ -91,6 +90,52 @@ function maskComments(code) {
     i += 1;
   }
   return out;
+}
+
+// 提取真正的模块 specifier（from/import/require 后的字符串），避免在普通字符串里裸搜包名。
+function importSpecifiers(code) {
+  const specs = [];
+  const n = code.length;
+  let i = 0;
+  let acc = '';
+  while (i < n) {
+    const c = code[i];
+    const c2 = code[i + 1];
+    if (c === '/' && c2 === '/') {
+      while (i < n && code[i] !== '\n') i += 1;
+      continue;
+    }
+    if (c === '/' && c2 === '*') {
+      i += 2;
+      while (i < n && !(code[i] === '*' && code[i + 1] === '/')) i += 1;
+      i += 2;
+      continue;
+    }
+    if (c === '"' || c === "'" || c === '`') {
+      const quote = c;
+      let j = i + 1;
+      let content = '';
+      while (j < n && code[j] !== quote) {
+        if (code[j] === '\\') {
+          content += code[j + 1] ?? '';
+          j += 2;
+          continue;
+        }
+        content += code[j];
+        j += 1;
+      }
+      if (/(?:\bfrom|\bimport|\brequire\s*\(|\bimport\s*\()\s*$/.test(acc)) {
+        specs.push(content);
+      }
+      i = j + 1;
+      acc = '';
+      continue;
+    }
+    acc += c;
+    if (acc.length > 32) acc = acc.slice(-32);
+    i += 1;
+  }
+  return specs;
 }
 const majorOf = v => {
   const m = String(v ?? '').match(/(\d+)/);
@@ -172,9 +217,9 @@ function main() {
     appToolsVersion != null &&
     WORKSPACE_PROTO.test(String(appToolsVersion).trim());
   const configFile = detectConfigFile(projectDir);
-  // 剥离注释/字符串后再做特征与信号匹配，避免注释里的配置字面量误导
+  // 结构/标识符特征与信号：剥离注释**和字符串**，避免注释/普通字符串里的配置字面量误导
   const configText = configFile
-    ? maskComments(readText(path.join(projectDir, configFile)))
+    ? maskCommentsAndStrings(readText(path.join(projectDir, configFile)))
     : '';
 
   // 阻断判断
@@ -196,8 +241,14 @@ function main() {
     .concat(collectSources(path.join(projectDir, 'server')))
     .concat(collectSources(path.join(projectDir, 'api')));
   const rel = f => path.relative(projectDir, f);
+  // 标识符类信号：剥注释+字符串后匹配（普通字符串不算信号）
   const grep = re =>
-    files.filter(f => re.test(maskComments(readText(f)))).map(rel);
+    files.filter(f => re.test(maskCommentsAndStrings(readText(f)))).map(rel);
+  // import 路径：只取真实模块 specifier（避免字符串里裸搜包名）
+  const grepImport = mod =>
+    files
+      .filter(f => importSpecifiers(readText(f)).some(s => s.startsWith(mod)))
+      .map(rel);
 
   const src = path.join(projectDir, 'src');
   // 入口类型
@@ -217,9 +268,9 @@ function main() {
     'app-config': grep(/\bApp\.config\b/),
     'app-init': grep(/\bApp\.init\b/),
     'layout-config-init': grep(/export\s+const\s+(config|init)\b/),
-    // import 路径映射
-    'import-bff': grep(/@modern-js\/runtime\/bff\b/),
-    'import-server': grep(/@modern-js\/runtime\/server\b/),
+    // import 路径映射（只看真实模块 specifier）
+    'import-bff': grepImport('@modern-js/runtime/bff'),
+    'import-server': grepImport('@modern-js/runtime/server'),
     // runtime API
     'use-runtime-context': grep(/\buseRuntimeContext\b/),
     // 配置

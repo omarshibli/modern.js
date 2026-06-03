@@ -110,8 +110,8 @@ function maskCommentsAndStrings(code) {
   return out;
 }
 
-// 只剥离注释、**保留字符串原样**（等长），用于信号/特征匹配——import 路径本身是字符串，
-// 不能被 mask 掉；但注释里的字面量不应参与匹配。字符串内的 // 不当注释处理。
+// 只剥离注释、**保留字符串原样**（等长），用于需要字符串「值」的判断（如 ssr.mode: 'string'）。
+// 字符串内的 // 不当注释处理。
 function maskComments(code) {
   let out = '';
   const n = code.length;
@@ -164,6 +164,55 @@ function maskComments(code) {
     i += 1;
   }
   return out;
+}
+
+// 提取真正的模块 specifier（import x from '...'、export ... from '...'、import '...'、
+// import('...')、require('...')）。逐字符扫描：跳过注释，遇到字符串时回看前一个 token 是否
+// 为 import/from/require( 才算 specifier——避免在普通字符串文本里裸搜包名造成误判。
+function importSpecifiers(code) {
+  const specs = [];
+  const n = code.length;
+  let i = 0;
+  let acc = ''; // 最近的代码片段（不含注释/字符串），用于判定字符串是否处于 import 位置
+  while (i < n) {
+    const c = code[i];
+    const c2 = code[i + 1];
+    if (c === '/' && c2 === '/') {
+      while (i < n && code[i] !== '\n') i += 1;
+      continue;
+    }
+    if (c === '/' && c2 === '*') {
+      i += 2;
+      while (i < n && !(code[i] === '*' && code[i + 1] === '/')) i += 1;
+      i += 2;
+      continue;
+    }
+    if (c === '"' || c === "'" || c === '`') {
+      const quote = c;
+      let j = i + 1;
+      let content = '';
+      while (j < n && code[j] !== quote) {
+        if (code[j] === '\\') {
+          content += code[j + 1] ?? '';
+          j += 2;
+          continue;
+        }
+        content += code[j];
+        j += 1;
+      }
+      // 前一个 token 是 from / import / require( / import( 时，本字符串才是模块 specifier
+      if (/(?:\bfrom|\bimport|\brequire\s*\(|\bimport\s*\()\s*$/.test(acc)) {
+        specs.push(content);
+      }
+      i = j + 1;
+      acc = '';
+      continue;
+    }
+    acc += c;
+    if (acc.length > 32) acc = acc.slice(-32);
+    i += 1;
+  }
+  return specs;
 }
 
 // 取对象字面量 `{...}` 的顶层属性片段（忽略嵌套/注释/字符串），用于只识别顶层字段
@@ -312,9 +361,11 @@ function migrateImportPaths(files) {
   return flags;
 }
 
-// import 改到新包后，补充对应依赖，否则 install/build 失败。
-// 版本沿用现有 @modern-js 依赖的协议：app-tools / runtime 是 workspace/link/catalog 等协议时，
-// 新补依赖也用同协议（随 monorepo 升级），不写固定 toVersion，避免 workspace 项目混入固定包。
+// import 改到新包后，补充对应依赖，否则 install/build 失败。版本协议处理：
+//   - 普通 semver：用 toVersion
+//   - workspace: / catalog:（**名称无关**协议，由 key 决定包）：复用现有 app-tools/runtime 的 spec
+//   - link: / file: / portal: / npm:（**指向具体包路径/别名**）：不能把 app-tools 的目标写给别的包，
+//     否则会指错路径 → 不写依赖，进 manual 提示手动添加正确协议
 function ensureMappedDeps(dir, toVersion, flags) {
   const verOf = (pkg, name) =>
     pkg.dependencies?.[name] ?? pkg.devDependencies?.[name];
@@ -324,19 +375,34 @@ function ensureMappedDeps(dir, toVersion, flags) {
   // 参考协议：优先 app-tools，其次 runtime
   const refVer =
     verOf(pkg, '@modern-js/app-tools') ?? verOf(pkg, '@modern-js/runtime');
-  const addVer = isWorkspaceProto(refVer) ? refVer : toVersion;
+  const refStr = refVer == null ? '' : String(refVer).trim();
+  // 名称无关、可安全复用的协议
+  const reusable = /^(workspace:|catalog:)/.test(refStr);
+  // 指向具体路径/别名、不可复用的协议（虽在保留范围内，但不能照搬给别的包）
+  const pathPinned = !reusable && isWorkspaceProto(refStr);
+  const addVer = reusable ? refStr : toVersion;
   const added = [];
-  if (flags.bff && verOf(pkg, '@modern-js/plugin-bff') == null) {
-    pkg.dependencies['@modern-js/plugin-bff'] = addVer;
-    added.push('@modern-js/plugin-bff');
-  }
-  if (flags.server && verOf(pkg, '@modern-js/server-runtime') == null) {
-    pkg.dependencies['@modern-js/server-runtime'] = addVer;
-    added.push('@modern-js/server-runtime');
-  }
+  const manualAdd = [];
+  const want = (flag, name) => {
+    if (!flag || verOf(pkg, name) != null) return;
+    if (pathPinned) {
+      manualAdd.push(name);
+      return;
+    }
+    pkg.dependencies[name] = addVer;
+    added.push(name);
+  };
+  want(flags.bff, '@modern-js/plugin-bff');
+  want(flags.server, '@modern-js/server-runtime');
   if (added.length) {
     fs.writeFileSync(file, `${JSON.stringify(pkg, null, 2)}\n`);
     note(changed, `补充依赖（${addVer}）：${added.join(', ')}`);
+  }
+  if (manualAdd.length) {
+    note(
+      manual,
+      `现有 @modern-js 依赖用 ${refStr.split(':')[0]}: 协议（指向具体包路径/别名，无法照搬给别的包）：请手动添加 ${manualAdd.join(', ')} 的正确依赖协议`,
+    );
   }
 }
 
@@ -940,10 +1006,11 @@ function flagManual(dir, reactMajor) {
     'modern.config.mjs',
     'modern.config.cjs',
   ].find(f => exists(dir, f));
-  // 用 maskComments：注释里的 ssr/appIcon/webpack 等不应触发人工项
-  const configText = configFile
-    ? maskComments(readText(path.join(dir, configFile)))
-    : '';
+  const rawConfig = configFile ? readText(path.join(dir, configFile)) : '';
+  // 结构/标识符（appIcon 键、ssr 键、webpack）用 maskCommentsAndStrings，普通字符串不触发；
+  // 需要字符串「值」的判断（ssr.mode: 'string'/'stream'）用 maskComments（保留字符串、去注释）
+  const configText = maskCommentsAndStrings(rawConfig);
+  const configWithStr = maskComments(rawConfig);
   if (exists(dir, 'server', 'index.ts') || exists(dir, 'server', 'index.js')) {
     note(
       manual,
@@ -956,8 +1023,8 @@ function flagManual(dir, reactMajor) {
   // SSR：v3 默认 stream。只在「显式 string」「React<18 启用 SSR」「模式/版本无法判断」时提示；
   // mode:'stream' + React18+ 是 v3 默认安全形态，不报（避免污染报告边界）
   if (/\bssr\b/.test(configText)) {
-    const hasStream = /mode\s*:\s*['"]stream['"]/.test(configText);
-    const hasString = /mode\s*:\s*['"]string['"]/.test(configText);
+    const hasStream = /mode\s*:\s*['"]stream['"]/.test(configWithStr);
+    const hasString = /mode\s*:\s*['"]string['"]/.test(configWithStr);
     if (hasString) {
       note(
         manual,
@@ -997,10 +1064,10 @@ function detectV2Signals(dir, pkg) {
     'modern.config.mjs',
     'modern.config.cjs',
   ].find(f => exists(dir, f));
-  // 用 maskComments（只剥注释、保留字符串）：注释里的 runtime/applyBaseConfig 不当信号，
-  // 但 import 路径（字符串）必须保留，否则 @modern-js/runtime/bff 等信号会被误删
+  // 结构/标识符信号：用 maskCommentsAndStrings（字符串一并 mask），普通字符串示例文本不算信号。
+  // import 信号：单独从真实模块 specifier 提取，不在任意字符串里裸搜包名。
   const configText = configFile
-    ? maskComments(readText(path.join(dir, configFile)))
+    ? maskCommentsAndStrings(readText(path.join(dir, configFile)))
     : '';
   const deps = {
     ...pkg.dependencies,
@@ -1010,7 +1077,10 @@ function detectV2Signals(dir, pkg) {
   const files = collectSources(path.join(dir, 'src'))
     .concat(collectSources(path.join(dir, 'server')))
     .concat(collectSources(path.join(dir, 'api')));
-  const anyFile = re => files.some(f => re.test(maskComments(readText(f))));
+  const anyCode = re =>
+    files.some(f => re.test(maskCommentsAndStrings(readText(f))));
+  const anyImport = mod =>
+    files.some(f => importSpecifiers(readText(f)).some(s => s.startsWith(mod)));
   const signals = [];
   if (/\bruntime\s*:/.test(configText))
     signals.push('modern.config 顶层 runtime');
@@ -1021,20 +1091,20 @@ function detectV2Signals(dir, pkg) {
     signals.push('applyBaseConfig');
   if (
     deps['@modern-js/plugin-tailwindcss'] ||
-    /tailwindcssPlugin|plugin-tailwindcss/.test(configText)
+    /\btailwindcssPlugin\b/.test(configText)
   ) {
     signals.push('plugin-tailwindcss');
   }
-  if (anyFile(/@modern-js\/runtime\/bff\b/))
+  if (anyImport('@modern-js/runtime/bff'))
     signals.push('@modern-js/runtime/bff import');
-  if (anyFile(/@modern-js\/runtime\/server\b/)) {
+  if (anyImport('@modern-js/runtime/server')) {
     signals.push('@modern-js/runtime/server import');
   }
-  if (anyFile(/\bApp\.config\b/)) signals.push('App.config');
-  if (anyFile(/\bApp\.init\b/)) signals.push('App.init');
-  if (anyFile(/export\s+const\s+(config|init)\b/))
+  if (anyCode(/\bApp\.config\b/)) signals.push('App.config');
+  if (anyCode(/\bApp\.init\b/)) signals.push('App.init');
+  if (anyCode(/export\s+const\s+(config|init)\b/))
     signals.push('layout config/init');
-  if (anyFile(/\buseRuntimeContext\b/)) signals.push('useRuntimeContext');
+  if (anyCode(/\buseRuntimeContext\b/)) signals.push('useRuntimeContext');
   if (exists(dir, 'src', 'pages') && !exists(dir, 'src', 'routes')) {
     signals.push('src/pages');
   }
