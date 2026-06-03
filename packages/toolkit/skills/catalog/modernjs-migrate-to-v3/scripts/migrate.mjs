@@ -125,22 +125,41 @@ function migrateConfig(dir) {
   const before = code;
   let hadTailwind = false;
 
-  // dev: { port: X } -> server.port（已有 server 块则合并进去，否则新增 server 块）
-  const devPort = code.match(
-    /\bdev\s*:\s*\{\s*port\s*:\s*([^,}]+?)\s*,?\s*\}\s*,?/,
-  );
-  if (devPort) {
-    const port = devPort[1].trim();
-    code = code.replace(devPort[0], '');
-    const server = code.match(/\bserver\s*:\s*\{/);
-    if (server) {
-      const at = server.index + server[0].length;
-      code = `${code.slice(0, at)} port: ${port},${code.slice(at)}`;
-    } else {
-      code = code.replace(
-        /defineConfig\(\s*\{/,
-        `defineConfig({\n  server: { port: ${port} },`,
-      );
+  // dev.port -> server.port：只移动 port，保留 dev 块其余配置；解析不了则进人工清单
+  const devMatch = code.match(/\bdev\s*:\s*\{/);
+  if (devMatch) {
+    const block = extractBalanced(
+      code,
+      devMatch.index + devMatch[0].length - 1,
+    );
+    if (!block) {
+      note(manual, 'dev 块解析失败：dev.port 需人工迁到 server.port');
+    } else if (/\bport\s*:/.test(block.body)) {
+      const port = block.body
+        .match(/\bport\s*:\s*([^,}]+?)\s*(?=[,}])/)[1]
+        .trim();
+      let inner = block.body
+        .slice(1, -1)
+        .replace(/\bport\s*:\s*[^,}]+\s*,?/, '');
+      inner = inner
+        .replace(/,\s*,/g, ',')
+        .replace(/^\s*,|,\s*$/g, '')
+        .trim();
+      const devReplacement = inner ? `dev: { ${inner} }` : '';
+      code =
+        code.slice(0, devMatch.index) + devReplacement + code.slice(block.end);
+      if (!devReplacement) code = code.replace(/,(\s*[,)\]\n])/, '$1');
+      const server = code.match(/\bserver\s*:\s*\{/);
+      if (server) {
+        const at = server.index + server[0].length;
+        code = `${code.slice(0, at)} port: ${port},${code.slice(at)}`;
+      } else {
+        code = code.replace(
+          /defineConfig\(\s*\{/,
+          `defineConfig({\n  server: { port: ${port} },`,
+        );
+      }
+      note(changed, 'dev.port → server.port');
     }
   }
 
@@ -158,10 +177,7 @@ function migrateConfig(dir) {
 
   if (code !== before) {
     fs.writeFileSync(file, code);
-    note(
-      changed,
-      `配置 ${configFile}：dev.port→server.port${hadTailwind ? '、移除 tailwind 插件' : ''}`,
-    );
+    if (hadTailwind) note(changed, `配置 ${configFile}：移除 tailwind 插件`);
   }
   return hadTailwind;
 }
@@ -210,10 +226,17 @@ function migrateEntry(dir) {
     .map(f => path.join(src, f))
     .find(fs.existsSync);
   let runtimeConfigBody = null;
+  const rtExists = fs.existsSync(path.join(src, 'modern.runtime.ts'));
   if (appFile) {
     let code = readText(appFile);
     const cfgMatch = code.match(/App\.config\s*=\s*\{/);
-    if (cfgMatch) {
+    if (cfgMatch && rtExists) {
+      // 已有 modern.runtime.ts：不覆盖，App.config 留给人工合并
+      note(
+        manual,
+        '已存在 src/modern.runtime.ts：App.config 需人工合并进现有 defineRuntimeConfig（不自动覆盖，见 references/migrate-entry.md）',
+      );
+    } else if (cfgMatch) {
       const braceStart = cfgMatch.index + cfgMatch[0].length - 1;
       const ext = extractBalanced(code, braceStart);
       if (ext) {
@@ -293,6 +316,34 @@ function migratePagesToRoutes(dir) {
   if (exists(src, 'pages') && !exists(src, 'routes')) {
     fs.renameSync(path.join(src, 'pages'), path.join(src, 'routes'));
     note(changed, 'src/pages → src/routes（约定式路由）');
+    // 更新相对引用 ../pages → ../routes；残留（别名等非相对）引用进人工清单
+    let rewrote = 0;
+    const residual = [];
+    for (const f of collectSources(src)) {
+      const code = readText(f);
+      const updated = code.replace(
+        /(['"])((?:\.\.?\/)+)pages(\/[^'"]*)?\1/g,
+        (_, q, relPath, tail) => `${q}${relPath}routes${tail || ''}${q}`,
+      );
+      if (updated !== code) {
+        fs.writeFileSync(f, updated);
+        rewrote += 1;
+      }
+      if (
+        /(?:from\s+|import\(\s*|require\(\s*)['"][^'"]*\bpages\b[^'"]*['"]/.test(
+          updated,
+        )
+      ) {
+        residual.push(path.relative(dir, f));
+      }
+    }
+    if (rewrote) note(changed, `更新 ${rewrote} 处 pages→routes 相对引用`);
+    if (residual.length) {
+      note(
+        manual,
+        `仍有 pages 引用需人工核对（别名/非相对路径）：${residual.join(', ')}`,
+      );
+    }
   } else if (exists(src, 'pages')) {
     note(manual, 'src/pages 与 src/routes 并存：需人工合并');
   }
