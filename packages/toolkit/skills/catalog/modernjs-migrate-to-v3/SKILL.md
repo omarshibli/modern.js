@@ -45,11 +45,11 @@ node scripts/migrate.mjs <projectDir> --to=<目标版本>
 自动完成（依据 `guides/upgrade/*`）：
 
 - **依赖**：`@modern-js/*` 统一升到目标版本（固定版本号）；移除 `@modern-js/plugin-tailwindcss`
-- **import 路径**：`@modern-js/runtime/bff`→`@modern-js/plugin-bff/runtime`、`@modern-js/runtime/server`→`@modern-js/server-runtime`
-- **配置**：`dev.port`→`server.port`；移除 tailwind 插件并写 `postcss.config.cjs`
-- **入口**：`src/index.*`→`src/entry.*`（bootstrap 函数改写为 `createRoot()`/`render()`）；`App.config` 抽取到 `src/modern.runtime.ts`
-- **运行时**：`useRuntimeContext()`→`use(RuntimeContext)`
-- **路由**：`src/pages`→`src/routes`（无 routes 时）
+- **import 路径**：`@modern-js/runtime/bff`→`@modern-js/plugin-bff/runtime`、`@modern-js/runtime/server`→`@modern-js/server-runtime`，并**补充对应依赖**（`@modern-js/plugin-bff` / `@modern-js/server-runtime`，与 app-tools 同版本）；命中 BFF 时给 `modern.config` 加 `bffPlugin()`
+- **配置**：`dev.port`→`server.port`（只移顶层 `port`，保留 dev 块其余字段；嵌套如 `dev.client.port` 不动）；移除 tailwind 插件并写 `postcss.config.cjs`
+- **入口**：`src/index.*`→`src/entry.*`（bootstrap 函数改写为 `createRoot()`/`render()`）；`App.config` 抽取到 `src/modern.runtime.ts`（**已存在则不覆盖**，进人工清单）
+- **运行时**：`useRuntimeContext()` → React 19+ 用 `use(RuntimeContext)`、<19 用 `useContext(RuntimeContext)`
+- **路由**：`src/pages`→`src/routes`（无 routes 时），并改写相对 import 引用，残留进人工清单
 
 完成后查看 `.agents/runs/modernjs-migrate/report.json` 的 `changed` / `manual`。本步骤成功后执行 `references/commit-changes.md`。
 

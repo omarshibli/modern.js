@@ -46,6 +46,25 @@ function collectSources(dir, files = []) {
   return files;
 }
 
+// 取对象字面量 `{...}` 的顶层属性片段（忽略嵌套），用于只识别顶层字段
+function topLevelProps(body) {
+  const inner = body.slice(1, -1);
+  const parts = [];
+  let depth = 0;
+  let start = 0;
+  for (let i = 0; i < inner.length; i++) {
+    const ch = inner[i];
+    if (ch === '{' || ch === '[' || ch === '(') depth += 1;
+    else if (ch === '}' || ch === ']' || ch === ')') depth -= 1;
+    else if (ch === ',' && depth === 0) {
+      parts.push(inner.slice(start, i));
+      start = i + 1;
+    }
+  }
+  parts.push(inner.slice(start));
+  return parts.map(p => p.trim()).filter(Boolean);
+}
+
 // 从 `key = {` 之后做花括号配平，返回对象字面量文本与结束位置
 function extractBalanced(text, startIdx) {
   let depth = 0;
@@ -91,17 +110,19 @@ function migrateDeps(dir, toVersion) {
 // ---- 2) import 路径映射 ----
 function migrateImportPaths(files) {
   const map = [
-    ['@modern-js/runtime/bff', '@modern-js/plugin-bff/runtime'],
-    ['@modern-js/runtime/server', '@modern-js/server-runtime'],
+    ['@modern-js/runtime/bff', '@modern-js/plugin-bff/runtime', 'bff'],
+    ['@modern-js/runtime/server', '@modern-js/server-runtime', 'server'],
   ];
   const hit = [];
+  const flags = { bff: false, server: false };
   for (const f of files) {
     let code = readText(f);
     let c = false;
-    for (const [from, to] of map) {
+    for (const [from, to, flag] of map) {
       if (code.includes(from)) {
         code = code.split(from).join(to);
         c = true;
+        flags[flag] = true;
       }
     }
     if (c) {
@@ -110,6 +131,50 @@ function migrateImportPaths(files) {
     }
   }
   if (hit.length) note(changed, `import 路径映射：${hit.join(', ')}`);
+  return flags;
+}
+
+// import 改到新包后，补充对应依赖（与 app-tools 同版本），否则 install/build 失败
+function ensureMappedDeps(dir, toVersion, flags) {
+  const hasDep = (pkg, name) =>
+    Boolean(pkg.dependencies?.[name] || pkg.devDependencies?.[name]);
+  const file = path.join(dir, 'package.json');
+  const pkg = JSON.parse(readText(file));
+  pkg.dependencies = pkg.dependencies || {};
+  const added = [];
+  if (flags.bff && !hasDep(pkg, '@modern-js/plugin-bff')) {
+    pkg.dependencies['@modern-js/plugin-bff'] = toVersion;
+    added.push('@modern-js/plugin-bff');
+  }
+  if (flags.server && !hasDep(pkg, '@modern-js/server-runtime')) {
+    pkg.dependencies['@modern-js/server-runtime'] = toVersion;
+    added.push('@modern-js/server-runtime');
+  }
+  if (added.length) {
+    fs.writeFileSync(file, `${JSON.stringify(pkg, null, 2)}\n`);
+    note(changed, `补充依赖：${added.join(', ')}`);
+  }
+}
+
+// 启用 BFF 后，modern.config 需 import 并加入 bffPlugin()
+function addBffPlugin(dir, flags) {
+  if (!flags.bff) return;
+  const configFile = [
+    'modern.config.ts',
+    'modern.config.js',
+    'modern.config.mjs',
+  ].find(f => exists(dir, f));
+  if (!configFile) return;
+  const file = path.join(dir, configFile);
+  let code = readText(file);
+  if (/\bbffPlugin\b/.test(code)) return;
+  code = code.replace(
+    /(import[^\n]*\n)/,
+    `$1import { bffPlugin } from '@modern-js/plugin-bff';\n`,
+  );
+  code = code.replace(/plugins\s*:\s*\[/, 'plugins: [bffPlugin(), ');
+  fs.writeFileSync(file, code);
+  note(changed, '配置：添加 bffPlugin()');
 }
 
 // ---- 3) 配置：dev.port→server.port、移除 tailwind 插件 ----
@@ -134,32 +199,33 @@ function migrateConfig(dir) {
     );
     if (!block) {
       note(manual, 'dev 块解析失败：dev.port 需人工迁到 server.port');
-    } else if (/\bport\s*:/.test(block.body)) {
-      const port = block.body
-        .match(/\bport\s*:\s*([^,}]+?)\s*(?=[,}])/)[1]
-        .trim();
-      let inner = block.body
-        .slice(1, -1)
-        .replace(/\bport\s*:\s*[^,}]+\s*,?/, '');
-      inner = inner
-        .replace(/,\s*,/g, ',')
-        .replace(/^\s*,|,\s*$/g, '')
-        .trim();
-      const devReplacement = inner ? `dev: { ${inner} }` : '';
-      code =
-        code.slice(0, devMatch.index) + devReplacement + code.slice(block.end);
-      if (!devReplacement) code = code.replace(/,(\s*[,)\]\n])/, '$1');
-      const server = code.match(/\bserver\s*:\s*\{/);
-      if (server) {
-        const at = server.index + server[0].length;
-        code = `${code.slice(0, at)} port: ${port},${code.slice(at)}`;
-      } else {
-        code = code.replace(
-          /defineConfig\(\s*\{/,
-          `defineConfig({\n  server: { port: ${port} },`,
-        );
+    } else {
+      // 只识别**顶层** dev.port；嵌套（如 dev.client.port）不动
+      const props = topLevelProps(block.body);
+      const portIdx = props.findIndex(p => /^['"]?port['"]?\s*:/.test(p));
+      if (portIdx !== -1) {
+        const port = props[portIdx]
+          .slice(props[portIdx].indexOf(':') + 1)
+          .trim();
+        const rest = props.filter((_, i) => i !== portIdx);
+        const devReplacement = rest.length ? `dev: { ${rest.join(', ')} }` : '';
+        code =
+          code.slice(0, devMatch.index) +
+          devReplacement +
+          code.slice(block.end);
+        if (!devReplacement) code = code.replace(/,(\s*[,)\]\n])/, '$1');
+        const server = code.match(/\bserver\s*:\s*\{/);
+        if (server) {
+          const at = server.index + server[0].length;
+          code = `${code.slice(0, at)} port: ${port},${code.slice(at)}`;
+        } else {
+          code = code.replace(
+            /defineConfig\(\s*\{/,
+            `defineConfig({\n  server: { port: ${port} },`,
+          );
+        }
+        note(changed, 'dev.port → server.port');
       }
-      note(changed, 'dev.port → server.port');
     }
   }
 
@@ -281,7 +347,9 @@ function migrateEntry(dir) {
 }
 
 // ---- 5) useRuntimeContext → use(RuntimeContext) ----
-function migrateRuntimeContext(files) {
+function migrateRuntimeContext(files, reactMajor) {
+  // React 19+ 用 use(RuntimeContext)；<19（v2 app 常见 17/18）用 useContext，避免生成不可用代码
+  const api = reactMajor >= 19 ? 'use' : 'useContext';
   const hit = [];
   for (const f of files) {
     let code = readText(f);
@@ -296,18 +364,22 @@ function migrateRuntimeContext(files) {
         const runtimeImport = rest
           ? `import { ${rest.replace(/\s+/g, ' ')}, RuntimeContext } from '@modern-js/runtime';`
           : `import { RuntimeContext } from '@modern-js/runtime';`;
-        return `import { use } from 'react';\n${runtimeImport}`;
+        return `import { ${api} } from 'react';\n${runtimeImport}`;
       },
     );
     code = code.replace(
       /\buseRuntimeContext\s*\(\s*\)/g,
-      'use(RuntimeContext)',
+      `${api}(RuntimeContext)`,
     );
     fs.writeFileSync(f, code);
     hit.push(path.basename(f));
   }
-  if (hit.length)
-    note(changed, `useRuntimeContext → use(RuntimeContext)：${hit.join(', ')}`);
+  if (hit.length) {
+    note(
+      changed,
+      `useRuntimeContext → ${api}(RuntimeContext)（React ${reactMajor >= 19 ? '19+' : '<19'}）：${hit.join(', ')}`,
+    );
+  }
 }
 
 // ---- 6) pages → routes ----
@@ -402,18 +474,29 @@ function main() {
     process.exit(1);
   }
 
+  const reactMajor =
+    Number(
+      String(
+        JSON.parse(readText(path.join(dir, 'package.json'))).dependencies
+          ?.react ?? '',
+      ).match(/(\d+)/)?.[1],
+    ) || 0;
+
   migrateDeps(dir, toVersion);
   const files = collectSources(path.join(dir, 'src'))
     .concat(collectSources(path.join(dir, 'server')))
     .concat(collectSources(path.join(dir, 'api')));
-  migrateImportPaths(files);
+  const importFlags = migrateImportPaths(files);
+  ensureMappedDeps(dir, toVersion, importFlags);
   const hadTailwind = migrateConfig(dir);
+  addBffPlugin(dir, importFlags);
   migrateEntry(dir);
   // entry/runtime 改完后再扫一次最新文件做 runtime-context
   migrateRuntimeContext(
     collectSources(path.join(dir, 'src')).concat(
       collectSources(path.join(dir, 'api')),
     ),
+    reactMajor,
   );
   migratePagesToRoutes(dir);
   writePostcss(dir, hadTailwind);

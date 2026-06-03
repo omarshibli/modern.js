@@ -136,10 +136,22 @@ try {
       a.read('server/index.ts').includes('@modern-js/server-runtime'),
   );
   check(
-    'useRuntimeContext → use(RuntimeContext)',
+    'React18: useRuntimeContext → useContext(RuntimeContext)',
     !/\buseRuntimeContext\b/.test(app) &&
-      app.includes('use(RuntimeContext)') &&
-      /from\s+['"]react['"]/.test(app),
+      app.includes('useContext(RuntimeContext)') &&
+      /import\s*\{\s*useContext\s*\}\s*from\s*['"]react['"]/.test(app),
+  );
+  check(
+    '补充 @modern-js/plugin-bff 依赖（import 改到新包）',
+    pkg.dependencies['@modern-js/plugin-bff'] === '3.0.0',
+  );
+  check(
+    '补充 @modern-js/server-runtime 依赖',
+    pkg.dependencies['@modern-js/server-runtime'] === '3.0.0',
+  );
+  check(
+    'config 加入 bffPlugin()',
+    /bffPlugin\(\)/.test(cfg) && cfg.includes('@modern-js/plugin-bff'),
   );
   const manualA = a.report().manual.join('\n');
   check('人工清单含 App.init', /App\.init/.test(manualA));
@@ -185,6 +197,42 @@ try {
   check(
     '无残留 pages 引用人工项',
     !/pages 引用/.test(c.report().manual.join('\n')),
+  );
+
+  // ===== 4) 嵌套 dev.client.port（顶层无 port）：不能误迁 =====
+  console.log('== v2-edge-devnested (nested dev.client.port only) ==');
+  const dn = prepare('v2-edge-devnested');
+  const cfgDn = dn.read('modern.config.ts');
+  check(
+    '嵌套 client.port 8081 保留（不被误迁）',
+    /client\s*:\s*\{[^}]*port\s*:\s*8081/.test(cfgDn),
+  );
+  check(
+    '顶层无 port → 不创建 server.port',
+    !/server\s*:\s*\{[^}]*port/.test(cfgDn),
+  );
+
+  // ===== 5) 嵌套 client.port + 顶层 port：只迁顶层 =====
+  console.log('== v2-edge-devboth (nested client.port + top-level port) ==');
+  const db = prepare('v2-edge-devboth');
+  const cfgDb = db.read('modern.config.ts');
+  check(
+    '顶层 dev.port → server.port (8080)',
+    /server\s*:\s*\{[^}]*port\s*:\s*8080/.test(cfgDb),
+  );
+  check(
+    '嵌套 client.port 8081 保留',
+    /client\s*:\s*\{[^}]*port\s*:\s*8081/.test(cfgDb),
+  );
+
+  // ===== 6) React 19：useRuntimeContext → use() =====
+  console.log('== v2-edge-react19 (React 19 → use()) ==');
+  const r = prepare('v2-edge-react19');
+  const appR = r.read('src/App.tsx');
+  check(
+    'React19: useRuntimeContext → use(RuntimeContext)',
+    appR.includes('use(RuntimeContext)') &&
+      /import\s*\{\s*use\s*\}\s*from\s*['"]react['"]/.test(appR),
   );
 
   console.log(`\n结果：${pass} 通过 / ${fail} 失败`);
