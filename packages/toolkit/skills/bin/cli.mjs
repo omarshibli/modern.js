@@ -9,9 +9,9 @@
 //     --dir     安装到哪个项目根（默认当前目录）
 
 import fs from 'node:fs';
-import readline from 'node:readline/promises';
 import path from 'node:path';
 import process from 'node:process';
+import readline from 'node:readline/promises';
 import { fileURLToPath } from 'node:url';
 
 const PKG_ROOT = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
@@ -94,9 +94,11 @@ async function promptTargets() {
     output: process.stdout,
   });
   try {
-    const answer = (await rl.question(
-      '请选择要安装到哪些 agent（逗号分隔：claude, codex, cursor）: ',
-    )).trim();
+    const answer = (
+      await rl.question(
+        '请选择要安装到哪些 agent（逗号分隔：claude, codex, cursor）: ',
+      )
+    ).trim();
     const parsed = resolveTargets(answer);
     if (!parsed || !parsed.targets || !parsed.targets.length) {
       console.error('未选择任何 target。');

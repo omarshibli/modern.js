@@ -30,8 +30,8 @@
 - 回答须匹配仓库当前版本，勿用更新版本未发布的特性。
 
 ## 复杂流程（走 Skills）
-- 维护者向 Skill 的**唯一手写源**是 `skills/maintainer/*`；`.claude/skills`、`.agents/skills` 等工具目录只是同步镜像（派生物，已 gitignore）。详见 `skills/README.md`。
-- 维护者向（规划中，P1+）：`modernjs-issue-triage`、`modernjs-dependency-audit`、`modernjs-pr-review`。
+- 维护者向 Skill 的**唯一手写源**是 `skills/maintainer/*`；`.claude/skills`、`.agents/skills`、`.cursor/skills` 等工具目录只是同步镜像（派生物，已 gitignore）。详见 `skills/README.md`。
+- 维护者向：已落地 `modernjs-dependency-audit`；规划中（P1+）`modernjs-issue-triage`、`modernjs-pr-review`。
 - 用户向 Skill 属于另一条链路：源在 `skills/user/*`，发布为 `@modern-js/skills`，用户用 `npx @modern-js/skills add` 显式安装（不在本仓维护者目录里）。
 - Skills 默认不强装、不隐式安装；只在多步骤 + 可验证 + 高频场景才做成 Skill，其余沉淀进本文件或文档。
 

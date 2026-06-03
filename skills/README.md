@@ -2,8 +2,6 @@
 
 本目录承载 Modern.js 官方的 **Agent Skills**：面向 AI Agent 的、可触发的多步骤流程（程序性知识 + 脚本 + 状态）。
 
-> 当前为 **P0 占位**：本目录只定义结构、分类与分发设计，**尚未落地任何 Skill 实现**（P1 实现首批）。
-
 ## 边界：Skills / AGENTS.md / llms.txt
 
 | 资产 | 职责 | source of truth |
@@ -19,32 +17,44 @@
 ### 1. 维护者向（maintainer）—— 服务「开发 Modern.js 仓库」的 agent
 
 - **source of truth**：`skills/maintainer/<skill>/SKILL.md` + `references/` + `scripts/`（单一手写源）。
-- **工具目录是派生产物**：`.claude/skills/`（Claude Code）、`.agents/skills/`（Codex）等只作为**同步/软链镜像**，由脚本从 `skills/maintainer/*` 生成，**不作为手写源**（避免两份正文漂移）。这些目录在 `.gitignore` 中（派生物不入库）。
+- **工具目录是派生产物**：`.claude/skills/`（Claude Code）、`.agents/skills/`（Codex）、`.cursor/skills/`（Cursor）只作为**同步/软链镜像**，由根脚本从 `skills/maintainer/*` 生成，**不作为手写源**（避免两份正文漂移）。这些目录在 `.gitignore` 中（派生物不入库）。
 - **路由**：仓库根 `AGENTS.md` 负责告诉 agent 何时用哪个 maintainer skill + 验证命令。
-- 规划中（P1+）：`modernjs-issue-triage`、`modernjs-dependency-audit`、`modernjs-pr-review`、`modernjs-test-selector`。
+- 同步命令：
+  ```bash
+  node scripts/sync-maintainer-skills.mjs --target=codex
+  node scripts/sync-maintainer-skills.mjs --target=all
+  ```
+- 已落地：`modernjs-dependency-audit`。
+- 规划中（P1+）：`modernjs-issue-triage`、`modernjs-pr-review`、`modernjs-test-selector`。
 
 ```
 skills/maintainer/<skill>/        # 唯一手写源
   SKILL.md  references/  scripts/
         │  同步脚本（生成/软链）
         ▼
-.claude/skills/<skill>/   .agents/skills/<skill>/   # 派生镜像，.gitignore 忽略
+.claude/skills/<skill>/   .agents/skills/<skill>/   .cursor/skills/<skill>/   # 派生镜像，.gitignore 忽略
 ```
 
 ### 2. 用户向（user）—— 服务「用 Modern.js 开发应用」的 agent
 
 - **source of truth**：`skills/user/<skill>/...`（或独立 repo），发布时打包成可分发包 **`@modern-js/skills`**（或 marketplace）。
+- **分发包只装用户向 Skill**：`packages/toolkit/skills/skills/*` 是由 `skills/user/*` 同步出来的发布内容，不放维护者内部 Skill。
 - **不藏在仓库内部目录、不靠 `@modern-js/create` 隐式安装**。
-- **用户显式安装**（P1 提供 CLI）：
+- **用户显式安装**：
 
   ```bash
   npx @modern-js/skills list                       # 列出可装 skill
   npx @modern-js/skills add modernjs-migrate-to-v3 # 安装单个 skill
   # 支持 --target=claude|codex|cursor|all
   ```
-- 规划中（P1+）：`modernjs-migrate-to-v3`、`modernjs-feature-enable`、（用户侧）`modernjs-dependency-audit`。
+- 同步到发布包：
+  ```bash
+  pnpm --filter @modern-js/skills sync
+  ```
+- 已落地：`modernjs-migrate-to-v3`、`modernjs-dependency-audit`。
+- 规划中（P1+）：`modernjs-feature-enable`。
 
-## 目录约定（实现后）
+## 目录约定
 
 每个 Skill 遵循 [Agent Skills 开放标准](https://github.com/vercel-labs/next-skills)：
 

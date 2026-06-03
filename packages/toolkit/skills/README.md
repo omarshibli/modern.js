@@ -30,4 +30,10 @@ npx @modern-js/skills add modernjs-dependency-audit --target=claude,codex --dir=
 
 ## 与仓库内 source of truth 的关系
 
-Skill 的唯一手写源在 Modern.js 仓库的 `skills/{maintainer,user}/*`；本包在发布时把**用户向** Skill 打包进 `skills/`（构建期同步，避免两份漂移）。`.claude/skills`、`.agents/skills`、`.cursor/skills` 是安装产物，不是手写源。
+Skill 的唯一手写源在 Modern.js 仓库的 `skills/user/*`；本包在发布时把**用户向** Skill 同步到 `skills/`：
+
+```bash
+pnpm --filter @modern-js/skills sync
+```
+
+`skills/maintainer/*` 是维护者内部 Skill，只能由根脚本同步到 `.claude/skills`、`.agents/skills`、`.cursor/skills`，不会进入本包。`.claude/skills`、`.agents/skills`、`.cursor/skills` 是安装产物，不是手写源。

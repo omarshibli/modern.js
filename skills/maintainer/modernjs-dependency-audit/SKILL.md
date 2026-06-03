@@ -1,24 +1,25 @@
 ---
 name: modernjs-dependency-audit
-description: 审计一个 Modern.js 用户项目或包的依赖健康度 —— 幽灵依赖（用了未声明）、循环依赖、重复多版本、peer/dev/prod 放置、安装体积与耗时归因。在「依赖报错、pnpm 严格模式炸、构建变慢、想优化体积、review 依赖改动」时使用。
+description: 审计 Modern.js 仓库内包的依赖健康度 —— 幽灵依赖（用了未声明）、循环依赖、重复多版本、peer/dev/prod 放置、安装体积与耗时归因。在「review 依赖改动、pnpm 严格模式报错、构建变慢、包边界不清」时使用。
 user-invocable: true
 ---
 
 # modernjs-dependency-audit
 
-依赖健康体检 + 优化建议，面向**使用 Modern.js 开发的用户项目**。
+依赖健康体检 + 优化建议，面向**开发 Modern.js 仓库的维护者**。用户项目侧的可分发版本在 `skills/user/modernjs-dependency-audit`，由 `@modern-js/skills` 发布。
 
 > 状态：P1 进行中。`scripts/audit.mjs` 已落地**幽灵依赖 + 循环依赖 + 重复多版本**检测（支持 `--json`），其余按下方 roadmap 迭代。
-> 建议针对**单个应用、包目录或用户项目根**跑；大型 monorepo 可先缩小到出问题的包，避免把无关模板和示例一并纳入报告。
+> 建议针对**单个包目录**跑，例如 `packages/solutions/app-tools`、`packages/cli/builder`、`packages/runtime/*`、`packages/server/*`。直接对整个 monorepo 根跑会因 codegen 模板字符串里的 `import` 文本产生正则误报（AST 化后解决）。
 
 ## 何时触发
 - `import` 的包在 pnpm 严格模式下报 "module not found"（疑似幽灵依赖）
 - 构建/安装变慢、产物体积上涨，想定位归因
 - review 一个改 `package.json` / 新增依赖的 PR
+- 检查高风险包是否把运行时依赖误放到 `devDependencies`
 - 例行依赖体检
 
 ## SOP
-1. **确定范围**：单个应用、包目录或整个用户项目根。
+1. **确定范围**：优先选择本仓单个包目录；跨包问题再扩大到同一分区，例如 `packages/runtime` 或 `packages/server`。
 2. **跑检测**（命令相对本 skill 目录）：
    ```bash
    node scripts/audit.mjs <target-dir>        # 幽灵 / 循环 / 重复多版本（--json 输出）
@@ -29,7 +30,7 @@ user-invocable: true
    - 幽灵依赖 → 补 `package.json` 声明，或移除多余 import；**不手改 lockfile**。
    - 循环依赖 → 给最短断环建议。
    - 重复多版本 → `pnpm dedupe` 视角收敛。
-4. **验证**：修完跑 `pnpm install` + 该包 `build` / `test`，确认不回归。
+4. **验证**：修完跑 `pnpm install` + `pnpm --filter <pkg> build` / `pnpm --filter <pkg> test`，确认不回归。
 
 ## 安全红线
 - 只读分析 + 给建议；**不自动改 lockfile / dist / node_modules**。
