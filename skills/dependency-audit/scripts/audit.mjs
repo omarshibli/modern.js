@@ -27,6 +27,7 @@ const SKIP_DIR = new Set([
   'dist-ssg',
   'coverage',
   '.git',
+  '.agents',
   '.nx',
   '.output',
   '.turbo',
@@ -43,6 +44,8 @@ function parseArgs(argv) {
   const json = rest.includes('--json');
   const failOnFindings = rest.includes('--fail-on-findings');
   const measureInstall = rest.includes('--measure-install');
+  const measureUserApp =
+    measureInstall || rest.includes('--measure-user-app-install');
   const topArg = rest.find(arg => arg.startsWith('--top='));
   const userAppArg = rest.find(arg => arg.startsWith('--user-app='));
   const dir = rest.find(arg => !arg.startsWith('--'));
@@ -53,6 +56,7 @@ function parseArgs(argv) {
     failOnFindings,
     json,
     measureInstall,
+    measureUserApp,
     top: topArg ? Number(topArg.split('=')[1]) : 20,
     userAppDir: userAppArg ? path.resolve(userAppArg.split('=')[1]) : null,
   };
@@ -294,7 +298,11 @@ function findDuplicateVersions(lockPath) {
     .sort((a, b) => b.versions.length - a.versions.length);
 }
 
-function findInstallRoot(dir) {
+function findInstallRoot(dir, climb = true) {
+  if (!climb) {
+    return fs.existsSync(path.join(dir, 'node_modules')) ? dir : null;
+  }
+
   let cur = dir;
   let fallback = null;
   for (;;) {
@@ -383,8 +391,8 @@ function measureInstalled(dir) {
   return sizes;
 }
 
-function installedSizeReport(dir, top) {
-  const installRoot = findInstallRoot(dir);
+function installedSizeReport(dir, top, climb = true) {
+  const installRoot = findInstallRoot(dir, climb);
   const installed = installRoot ? measureInstalled(installRoot) : null;
 
   if (!installed) {
@@ -443,6 +451,85 @@ function readCreateTemplateManifest(repoRoot) {
   return {
     source: path.relative(repoRoot, file),
     manifest: JSON.parse(text),
+  };
+}
+
+function workspaceVersions(repoRoot) {
+  const versions = new Map();
+  for (const dir of [repoRoot, ...findPackageDirs(repoRoot)]) {
+    const packageJson = path.join(dir, 'package.json');
+    if (!fs.existsSync(packageJson)) continue;
+    const pkg = readJson(packageJson);
+    if (pkg.name && pkg.version) versions.set(pkg.name, pkg.version);
+  }
+  return versions;
+}
+
+function renderTemplate(content, versions) {
+  const modernVersion = versions.get('@modern-js/runtime') || 'latest';
+  return content
+    .replace(/{{packageName}}/g, 'modern-user-app')
+    .replace(/{{version}}/g, modernVersion)
+    .replace(/{{#unless isSubproject}}/g, '')
+    .replace(/{{\/unless}}/g, '');
+}
+
+function copyRenderedTemplate(src, dest, versions) {
+  fs.mkdirSync(dest, { recursive: true });
+
+  for (const entry of fs.readdirSync(src, { withFileTypes: true })) {
+    const sourcePath = path.join(src, entry.name);
+    const outputName = entry.name.endsWith('.handlebars')
+      ? entry.name.slice(0, -'.handlebars'.length)
+      : entry.name;
+    const destPath = path.join(dest, outputName);
+
+    if (entry.isDirectory()) {
+      copyRenderedTemplate(sourcePath, destPath, versions);
+      continue;
+    }
+
+    if (entry.isFile()) {
+      fs.writeFileSync(
+        destPath,
+        renderTemplate(fs.readFileSync(sourcePath, 'utf-8'), versions),
+      );
+    }
+  }
+}
+
+function prepareGeneratedUserApp(repoRoot) {
+  const templateDir = path.join(repoRoot, 'packages/toolkit/create/template');
+  const appDir = path.join(
+    repoRoot,
+    `.agents/runs/dependency-audit/user-app-fixture-${process.pid}`,
+  );
+
+  fs.rmSync(appDir, { recursive: true, force: true });
+  copyRenderedTemplate(templateDir, appDir, workspaceVersions(repoRoot));
+  return appDir;
+}
+
+function measureInstall(cwd) {
+  const startedAt = Date.now();
+  const result = spawnSync(
+    '/usr/bin/time',
+    ['-p', 'pnpm', 'install', '--ignore-scripts'],
+    {
+      cwd,
+      encoding: 'utf-8',
+      maxBuffer: 1024 * 1024 * 20,
+    },
+  );
+  const output = `${result.stdout || ''}\n${result.stderr || ''}`;
+  const real = output.match(/^real\s+([\d.]+)/m);
+
+  return {
+    measured: true,
+    command: '/usr/bin/time -p pnpm install --ignore-scripts',
+    exitCode: result.status,
+    elapsedMs: Date.now() - startedAt,
+    realSeconds: real ? Number(real[1]) : null,
   };
 }
 
@@ -522,10 +609,79 @@ function measureInstallTime(repoRoot) {
   const real = output.match(/^real\s+([\d.]+)/m);
 
   return {
+    measured: true,
     command: '/usr/bin/time -p pnpm install --frozen-lockfile',
     exitCode: result.status,
     elapsedMs: Date.now() - startedAt,
     realSeconds: real ? Number(real[1]) : null,
+  };
+}
+
+function buildUserAppReport(repoRoot, options, repositorySize) {
+  const appDir = options.userAppDir || prepareGeneratedUserApp(repoRoot);
+  const appAudit = auditPackage(appDir);
+  const lockfile = path.join(appDir, 'pnpm-lock.yaml');
+  const installTime = options.measureUserApp
+    ? measureInstall(appDir)
+    : {
+        measured: false,
+        command:
+          'node skills/dependency-audit/scripts/audit.mjs --measure-user-app-install',
+      };
+  const appSize = installedSizeReport(appDir, options.top, false);
+
+  const referenceManifests = collectUserAppManifests(
+    repoRoot,
+    options.userAppDir,
+  );
+
+  return {
+    fixtureDir: path.relative(repoRoot, appDir),
+    generated: !options.userAppDir,
+    referenceManifestSources: referenceManifests.map(item => item.source),
+    app: {
+      packageCount: 1,
+      sourceFiles: appAudit.sourceFiles,
+      phantomPackages:
+        appAudit.phantom.length > 0
+          ? [
+              {
+                package: appAudit.name,
+                dir: appAudit.dir,
+                phantom: appAudit.phantom,
+              },
+            ]
+          : [],
+      circularPackages:
+        appAudit.circular.length > 0
+          ? [
+              {
+                package: appAudit.name,
+                dir: appAudit.dir,
+                circular: appAudit.circular,
+              },
+            ]
+          : [],
+    },
+    duplicateVersions: fs.existsSync(lockfile)
+      ? findDuplicateVersions(lockfile)
+      : [],
+    installTime,
+    installSize: {
+      installPresent: appSize.installPresent,
+      installRoot: appSize.installRoot
+        ? path.relative(repoRoot, appSize.installRoot) || '.'
+        : null,
+      totalBytes: appSize.totalBytes,
+      largest: appSize.largest,
+    },
+    declaredDirectDependencySizeSource: appSize.byPackage
+      ? 'user-app-install'
+      : 'repository-install',
+    declaredDirectDependencySize: directDependencySize(
+      [readJson(path.join(appDir, 'package.json'))],
+      appSize.byPackage || repositorySize.byPackage,
+    ).slice(0, options.top),
   };
 }
 
@@ -539,22 +695,7 @@ function buildRepositoryReport(options) {
   const maintainer = aggregatePackageReports(packageReports);
   const lockfile = findLockfile(repoRoot);
   const size = installedSizeReport(repoRoot, options.top);
-  const userAppManifests = collectUserAppManifests(
-    repoRoot,
-    options.userAppDir,
-  );
-  const userAppReports = userAppManifests
-    .filter(item => item.source.endsWith('package.json'))
-    .map(item => auditPackage(path.dirname(path.join(repoRoot, item.source))));
-  const user = {
-    manifestSources: userAppManifests.map(item => item.source),
-    manifestCount: userAppManifests.length,
-    declaredDirectDependencySize: directDependencySize(
-      userAppManifests.map(item => item.manifest),
-      size.byPackage,
-    ).slice(0, options.top),
-    dependencyIssues: aggregatePackageReports(userAppReports),
-  };
+  const user = buildUserAppReport(repoRoot, options, size);
 
   return {
     target: repoRoot,
@@ -688,15 +829,42 @@ function printRepositoryReport(report, top) {
 
   printIssueSummary(
     'Modern user app perspective',
-    report.userApp.dependencyIssues,
+    report.userApp.app,
     report.target,
   );
   console.log(
-    `- app manifests: ${report.userApp.manifestCount} (${report.userApp.manifestSources
-      .slice(0, 6)
-      .join(', ')}${report.userApp.manifestSources.length > 6 ? ', ...' : ''})`,
+    `- fixture: ${report.userApp.fixtureDir} (${
+      report.userApp.generated ? 'generated from create template' : 'provided'
+    })`,
   );
-  console.log('- declared direct dependency installed size:');
+  console.log(
+    `- duplicate lockfile packages: ${report.userApp.duplicateVersions.length}`,
+  );
+  console.log(
+    `- installed size: ${mb(report.userApp.installSize.totalBytes)} (install root: ${
+      report.userApp.installSize.installRoot || 'not found'
+    })`,
+  );
+  for (const item of report.userApp.installSize.largest.slice(0, top)) {
+    console.log(`  - ${item.name}: ${mb(item.bytes)}`);
+  }
+  console.log(
+    `- install time: ${
+      report.userApp.installTime.measured === false
+        ? `not measured; run ${report.userApp.installTime.command}`
+        : `${report.userApp.installTime.realSeconds ?? 'unknown'}s (exit ${report.userApp.installTime.exitCode})`
+    }`,
+  );
+  console.log(
+    `- reference app manifests: ${report.userApp.referenceManifestSources.length} (${report.userApp.referenceManifestSources
+      .slice(0, 6)
+      .join(', ')}${
+      report.userApp.referenceManifestSources.length > 6 ? ', ...' : ''
+    })`,
+  );
+  console.log(
+    `- declared direct dependency installed size (${report.userApp.declaredDirectDependencySizeSource}):`,
+  );
   for (const item of report.userApp.declaredDirectDependencySize.slice(
     0,
     top,
@@ -705,7 +873,7 @@ function printRepositoryReport(report, top) {
   }
 
   console.log(
-    '\nNotes: phantom/cycle detection is static analysis; install size uses existing node_modules when present. Use --measure-install only when you intentionally want to run pnpm install timing.',
+    '\nNotes: phantom/cycle detection is static analysis. Use --measure-user-app-install to install and measure the generated user app fixture; use --measure-install only when you intentionally want to run pnpm install timing for both the repo and user app.',
   );
 }
 
@@ -731,8 +899,9 @@ function hasFindings(report) {
       report.maintainer.phantomPackages.length > 0 ||
       report.maintainer.circularPackages.length > 0 ||
       report.maintainer.duplicateVersions.length > 0 ||
-      report.userApp.dependencyIssues.phantomPackages.length > 0 ||
-      report.userApp.dependencyIssues.circularPackages.length > 0
+      report.userApp.app.phantomPackages.length > 0 ||
+      report.userApp.app.circularPackages.length > 0 ||
+      report.userApp.duplicateVersions.length > 0
     );
   }
 
