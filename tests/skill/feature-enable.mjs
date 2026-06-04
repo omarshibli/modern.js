@@ -481,6 +481,23 @@ try {
   check('output.ssg undefined → true', /\bssg\s*:\s*true\b/.test(suCfg));
   check('未残留 ssg: undefined', !/\bssg\s*:\s*undefined\b/.test(suCfg));
 
+  // B10：output 值是数组字面量（非对象）→ 同样进 manual、不下钻改写
+  console.log('== ssg: output value is array literal → manual (untouched) ==');
+  const oa = prepare('v3-app-ssg-output-array');
+  execFileSync('node', [path.join(SCRIPTS, 'enable.mjs'), 'ssg', oa.work], {
+    encoding: 'utf8',
+  });
+  const oaCfg = oa.read('modern.config.ts');
+  check(
+    '数组 output 原样保留',
+    /output:\s*\[\{\s*ssg:\s*false\s*\}\]/.test(oaCfg),
+  );
+  check(
+    'output 数组进 manual（未误改成对象）',
+    /output 值不是对象字面量/.test(oa.report().manual.join('\n')) &&
+      !/\bssg\s*:\s*true\b/.test(oaCfg),
+  );
+
   console.log(`\n结果：${pass} 通过 / ${fail} 失败`);
   if (fail > 0) process.exit(1);
   console.log('✅ feature-enable skill 验证通过');
