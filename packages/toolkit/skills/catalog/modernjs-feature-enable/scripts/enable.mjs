@@ -318,7 +318,11 @@ function enableSsg(dir) {
   const code = readConfig(dir);
   const pluginOn = isPluginEnabled(code, '@modern-js/plugin-ssg', 'ssgPlugin');
   if (pluginOn && hasOutputSsg(code)) {
-    note(manual, 'SSG 似乎已启用（ssgPlugin() + output.ssg 都在），未重复改写');
+    const via =
+      outputSsgState(code).state === 'byEntries-enabling'
+        ? 'output.ssgByEntries（已有入口启用）'
+        : 'output.ssg';
+    note(manual, `SSG 似乎已启用（ssgPlugin() + ${via} 都在），未重复改写`);
     return;
   }
   // 半启用（缺 plugin 或缺 output.ssg）都继续补齐——各子步骤幂等

@@ -588,6 +588,16 @@ try {
     'scan: ssgByEntries 含 true 算已启用',
     /ssg（.*）：已启用/.test(btScan),
   );
+  // 已启用文案按实际字段精确化：ssgByEntries 启用时不写成 output.ssg
+  const btRe = execFileSync(
+    'node',
+    [path.join(SCRIPTS, 'enable.mjs'), 'ssg', bt.work, '--json'],
+    { encoding: 'utf8' },
+  );
+  check(
+    'ssgByEntries 已启用文案点名 ssgByEntries（不误写 output.ssg）',
+    /ssgByEntries（已有入口启用）/.test(JSON.parse(btRe).manual.join('\n')),
+  );
 
   console.log(`\n结果：${pass} 通过 / ${fail} 失败`);
   if (fail > 0) process.exit(1);
