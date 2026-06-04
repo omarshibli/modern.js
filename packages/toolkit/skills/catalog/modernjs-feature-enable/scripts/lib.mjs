@@ -246,39 +246,88 @@ export function appendToPluginsArray(prop, call) {
 
 const reEsc = s => s.replace(/[.*+?^${}()|[\]\\/]/g, '\\$&');
 
-// 确保 code 里有 `name`（来自 importPkg）的命名绑定。已有则返回其本地名；没有则按模块风格
-// （ESM import / CJS require）插入一条，插到最后一条 import/require 后、否则文件顶部（跳过开头注释）。
-// 返回 { code, localName } 成功 | { manual } 无法可靠处理（不写半成品）。
+// 解析 importPkg 的命名绑定。**只承认真实 import/export-from/require 语句**（用 eachModuleSpecifier
+// 锚定真实 specifier，再在 maskCommentsAndStrings 上定位其解构 `{...}`），普通字符串里的伪 import 不算。
+// 返回 { localName, hasBinding, hasRealImport }：
+//   hasBinding=true 表示 name 已绑定（localName 为其本地名，含 alias）；
+//   hasRealImport=true 表示 importPkg 有真实 import/require（即使没解构出 name）。
+export function resolvePluginBinding(code, importPkg, name) {
+  const masked = maskCommentsAndStrings(code); // 注释+字符串都抹，定位真实代码括号
+  let result = { localName: null, hasBinding: false, hasRealImport: false };
+  eachModuleSpecifier(code, ({ content, open, kind }) => {
+    if (result.hasBinding) return;
+    if (content !== importPkg) return;
+    if (kind !== 'static' && kind !== 'require') return;
+    result.hasRealImport = true;
+    // 该 specifier 路径之前最近的真实 `{...}`（import/require 的解构）
+    const beforeMasked = masked.slice(0, open);
+    const braceClose = beforeMasked.lastIndexOf('}');
+    if (braceClose === -1) return;
+    const braceOpen = beforeMasked.lastIndexOf('{', braceClose);
+    if (braceOpen === -1) return;
+    // 确认该大括号确实属于本条 import/require（`} from '` 或 `} = require('`）
+    const between = beforeMasked.slice(braceClose + 1, open);
+    const ok =
+      /^\s*from\s*$/.test(between) || /^\s*=\s*require\s*\(\s*$/.test(between);
+    if (!ok) return;
+    const names = code.slice(braceOpen + 1, braceClose); // 真实代码片段
+    const m = names.match(
+      new RegExp(`\\b${reEsc(name)}\\b\\s*(?:(?:as|:)\\s*(\\w+))?`),
+    );
+    if (m)
+      result = {
+        localName: m[1] || name,
+        hasBinding: true,
+        hasRealImport: true,
+      };
+  });
+  return result;
+}
+
+// 确保 code 里有 `name`（来自 importPkg）的命名绑定，返回 { code, localName } | { manual }。
+// 已绑定 → 直接返回本地名；包已 import/require 但缺 name → 把 name 加进现有解构大括号；
+// 包未引入 → 按模块风格插入一条（ESM import / CJS require）。插入后用 resolvePluginBinding 复核。
 export function ensureNamedImport(code, importPkg, name) {
-  const masked = maskComments(code); // 注释剥离、字符串（含 import 路径）保留
+  const found = resolvePluginBinding(code, importPkg, name);
+  if (found.hasBinding) return { code, localName: found.localName };
+
+  const masked = maskCommentsAndStrings(code);
   const pkg = reEsc(importPkg);
-  // 已有 ESM import { ... } from 'pkg'
-  const esm = masked.match(
-    new RegExp(`import\\s*\\{([^}]*)\\}\\s*from\\s*['"]${pkg}['"]`),
-  );
-  if (esm) {
-    const m = esm[1].match(new RegExp(`\\b${name}\\b(?:\\s+as\\s+(\\w+))?`));
-    if (m) return { code, localName: m[1] || name };
-    return {
-      manual: `已 import ${importPkg} 但未导入 ${name}：请手动把 ${name} 加进 import 再使用`,
-    };
+
+  // 包已有真实 import/require 且是解构形式但缺 name → 把 name 加进大括号
+  if (found.hasRealImport) {
+    let next = null;
+    eachModuleSpecifier(code, ({ content, open, kind }) => {
+      if (next || content !== importPkg) return;
+      if (kind !== 'static' && kind !== 'require') return;
+      const beforeMasked = masked.slice(0, open);
+      const braceClose = beforeMasked.lastIndexOf('}');
+      if (braceClose === -1) return;
+      const braceOpen = beforeMasked.lastIndexOf('{', braceClose);
+      if (braceOpen === -1) return;
+      const between = beforeMasked.slice(braceClose + 1, open);
+      if (
+        !/^\s*from\s*$/.test(between) &&
+        !/^\s*=\s*require\s*\(\s*$/.test(between)
+      ) {
+        return;
+      }
+      const inner = code.slice(braceOpen + 1, braceClose).trim();
+      const merged = inner ? `${inner.replace(/,\s*$/, '')}, ${name}` : name;
+      next = `${code.slice(0, braceOpen + 1)} ${merged} ${code.slice(braceClose)}`;
+    });
+    if (next) {
+      const verify = resolvePluginBinding(next, importPkg, name);
+      if (verify.hasBinding) return { code: next, localName: name };
+    }
+    // 非解构形式（默认/副作用 import）或无法安全合并 → 退到「另插一条」
   }
-  // 已有 CJS const { ... } = require('pkg')
-  const cjs = masked.match(
-    new RegExp(
-      `(?:const|let|var)\\s*\\{([^}]*)\\}\\s*=\\s*require\\(\\s*['"]${pkg}['"]\\s*\\)`,
-    ),
-  );
-  if (cjs) {
-    const m = cjs[1].match(new RegExp(`\\b${name}\\b(?:\\s*:\\s*(\\w+))?`));
-    if (m) return { code, localName: m[1] || name };
-    return {
-      manual: `已 require ${importPkg} 但未解构 ${name}：请手动加 ${name} 再使用`,
-    };
-  }
-  // 没有绑定：按模块风格插入。module.exports / (无 ESM import 且有 require) → CJS
+
+  // 包未引入（或无法合并）：按模块风格新插一条
   const isCjs =
     /\bmodule\.exports\b/.test(masked) ||
+    (!/\bimport\b[^\n]*\bfrom\b/.test(masked) &&
+      new RegExp(`require\\(\\s*['"]${pkg}['"]`).test(masked)) ||
     (!/\bimport\b[^\n]*\bfrom\b/.test(masked) && /\brequire\s*\(/.test(masked));
   const stmt = isCjs
     ? `const { ${name} } = require('${importPkg}');`
@@ -294,11 +343,10 @@ export function ensureNamedImport(code, importPkg, name) {
       lastImp = i;
     }
   }
-  let at;
+  let at = 0;
   if (lastImp !== -1) {
     at = lastImp + 1;
   } else {
-    at = 0;
     for (let i = 0; i < maskedLines.length; i++) {
       const t = maskedLines[i].trim();
       if (
@@ -316,12 +364,47 @@ export function ensureNamedImport(code, importPkg, name) {
   }
   lines.splice(at, 0, stmt);
   const next = lines.join('\n');
-  // 校验确实插入成功
-  const verify = ensureNamedImport(next, importPkg, name);
-  if (verify.localName) return { code: next, localName: name };
+  if (resolvePluginBinding(next, importPkg, name).hasBinding) {
+    return { code: next, localName: name };
+  }
   return {
     manual: `无法自动插入 ${name} 的 import/require：请手动添加后再使用 ${name}()`,
   };
+}
+
+// 顶层 plugins 数组里是否有 `${localName}()` 调用（限定在配置对象顶层 plugins 内）
+export function topLevelPluginsHasCall(code, localName) {
+  if (!localName) return false;
+  const masked = maskCommentsAndStrings(code);
+  const objStart = locateConfigObjStart(code, masked);
+  if (objStart === -1) return false;
+  const obj = extractBalanced(code, objStart, masked);
+  if (!obj) return false;
+  const props = topLevelProps(obj.body);
+  const pluginsProp = props.find(p => /^plugins\s*:/.test(p));
+  if (!pluginsProp) return false;
+  return new RegExp(`\\b${reEsc(localName)}\\s*\\(`).test(
+    maskCommentsAndStrings(pluginsProp),
+  );
+}
+
+// 功能是否已启用：存在真实绑定，且顶层 plugins 调用了其本地名
+export function isPluginEnabled(code, importPkg, exportName) {
+  const b = resolvePluginBinding(code, importPkg, exportName);
+  if (!b.hasBinding) return false;
+  return topLevelPluginsHasCall(code, b.localName);
+}
+
+// 顶层 output 是否已配置 ssg / ssgByEntries（SSG 双条件之一）
+export function hasOutputSsg(code) {
+  const masked = maskCommentsAndStrings(code);
+  const objStart = locateConfigObjStart(code, masked);
+  if (objStart === -1) return false;
+  const obj = extractBalanced(code, objStart, masked);
+  if (!obj) return false;
+  const outProp = topLevelProps(obj.body).find(p => /^output\s*:/.test(p));
+  if (!outProp) return false;
+  return /\b(ssg|ssgByEntries)\b/.test(maskCommentsAndStrings(outProp));
 }
 
 // 定位 modern.config 文件

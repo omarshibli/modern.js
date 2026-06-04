@@ -16,11 +16,13 @@ import {
   exists,
   extractBalanced,
   findConfigFile,
-  importSpecifiers,
+  hasOutputSsg,
+  isPluginEnabled,
   isWorkspaceProto,
   locateConfigObjStart,
   maskCommentsAndStrings,
   readText,
+  topLevelPluginsHasCall,
   topLevelProps,
 } from './lib.mjs';
 
@@ -82,12 +84,7 @@ function addPluginToConfig(dir, { importPkg, pluginName }) {
   let code = readText(file);
   const original = code;
 
-  // plugins 里是否已有该 plugin() 调用
-  const callPresent = new RegExp(`\\b${pluginName}\\s*\\(`).test(
-    maskCommentsAndStrings(code),
-  );
-
-  // **先确保绑定**（ESM import 或 CJS require，含 alias），拿不到就进 manual、绝不写半成品
+  // **先确保绑定**（ESM import 或 CJS require，含 alias，仅认真实语句），拿不到就 manual、绝不写半成品
   const ens = ensureNamedImport(code, importPkg, pluginName);
   if (ens.manual) {
     note(manual, ens.manual);
@@ -95,6 +92,9 @@ function addPluginToConfig(dir, { importPkg, pluginName }) {
   }
   code = ens.code;
   const localName = ens.localName;
+
+  // 用解析出的**本地名**判断顶层 plugins 是否已调用（alias 感知，限定顶层 plugins）
+  const callPresent = topLevelPluginsHasCall(code, localName);
 
   // 已调用：此前可能缺绑定，本次已补 → 落盘绑定修复（不重复加调用，保证幂等）
   if (callPresent) {
@@ -255,19 +255,16 @@ function scaffoldBffApi(dir) {
   note(changed, 'scaffold：api/lambda/index.ts 示例 BFF 函数');
 }
 
-function configEnabled(dir, pluginName, importPkg) {
+// 读 config 文本（无 config 返回空串）
+function readConfig(dir) {
   const configFile = findConfigFile(dir);
-  if (!configFile) return false;
-  const code = readText(path.join(dir, configFile));
-  return (
-    new RegExp(`\\b${pluginName}\\s*\\(`).test(maskCommentsAndStrings(code)) &&
-    importSpecifiers(code).includes(importPkg)
-  );
+  return configFile ? readText(path.join(dir, configFile)) : '';
 }
 
 function enableBff(dir) {
-  if (configEnabled(dir, 'bffPlugin', '@modern-js/plugin-bff')) {
-    note(manual, 'BFF 似乎已启用（config 已有 bffPlugin()），未重复改写');
+  // 已启用判定：真实绑定 + 顶层 plugins 调用其本地名（alias 感知）
+  if (isPluginEnabled(readConfig(dir), '@modern-js/plugin-bff', 'bffPlugin')) {
+    note(manual, 'BFF 似乎已启用（绑定 + bffPlugin() 调用都在），未重复改写');
     return;
   }
   addModernDep(dir, '@modern-js/plugin-bff');
@@ -280,10 +277,14 @@ function enableBff(dir) {
 }
 
 function enableSsg(dir) {
-  if (configEnabled(dir, 'ssgPlugin', '@modern-js/plugin-ssg')) {
-    note(manual, 'SSG 似乎已启用（config 已有 ssgPlugin()），未重复改写');
+  // SSG 双条件：ssgPlugin 真实绑定+调用 **且** output.ssg/ssgByEntries。两者都在才算已启用
+  const code = readConfig(dir);
+  const pluginOn = isPluginEnabled(code, '@modern-js/plugin-ssg', 'ssgPlugin');
+  if (pluginOn && hasOutputSsg(code)) {
+    note(manual, 'SSG 似乎已启用（ssgPlugin() + output.ssg 都在），未重复改写');
     return;
   }
+  // 半启用（缺 plugin 或缺 output.ssg）都继续补齐——各子步骤幂等
   addModernDep(dir, '@modern-js/plugin-ssg');
   addPluginToConfig(dir, {
     importPkg: '@modern-js/plugin-ssg',

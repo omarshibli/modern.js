@@ -10,8 +10,8 @@ import {
   classifyProject,
   exists,
   findConfigFile,
-  importSpecifiers,
-  maskCommentsAndStrings,
+  hasOutputSsg,
+  isPluginEnabled,
   readText,
 } from './lib.mjs';
 
@@ -36,16 +36,17 @@ function main() {
 
   const configFile = findConfigFile(dir);
   const configText = configFile ? readText(path.join(dir, configFile)) : '';
-  const maskedCfg = maskCommentsAndStrings(configText);
-  const specs = configText ? importSpecifiers(configText) : [];
 
   const features = {
     bff: {
       label: 'BFF（一体化后端）',
       automated: true,
-      enabled:
-        /\bbffPlugin\s*\(/.test(maskedCfg) &&
-        specs.includes('@modern-js/plugin-bff'),
+      // 绑定（alias 感知）+ 顶层 plugins 调用都在才算已启用
+      enabled: isPluginEnabled(
+        configText,
+        '@modern-js/plugin-bff',
+        'bffPlugin',
+      ),
       doc: 'references/enable-bff.md',
     },
     server: {
@@ -63,9 +64,10 @@ function main() {
     ssg: {
       label: '静态站点生成 SSG',
       automated: true,
+      // 双条件：ssgPlugin 绑定+调用 **且** output.ssg/ssgByEntries（缺 output 视为未启用，需补齐）
       enabled:
-        /\bssgPlugin\s*\(/.test(maskedCfg) &&
-        specs.includes('@modern-js/plugin-ssg'),
+        isPluginEnabled(configText, '@modern-js/plugin-ssg', 'ssgPlugin') &&
+        hasOutputSsg(configText),
       doc: 'references/enable-ssg.md',
     },
     microFrontend: {

@@ -300,6 +300,79 @@ try {
     (nbCfg.match(/bffPlugin\(\)/g) || []).length === 1,
   );
 
+  // ===== 绑定解析 blocker（刺儿头 + 梅长苏）=====
+  // B1：普通字符串里的伪 import 不算绑定 → 必须插入真实 import，字符串原样
+  console.log('== binding: string fake import ≠ real binding ==');
+  const sf = prepare('v3-app-string-fake-import');
+  execFileSync('node', [path.join(SCRIPTS, 'enable.mjs'), 'bff', sf.work], {
+    encoding: 'utf8',
+  });
+  const sfCfg = sf.read('modern.config.ts');
+  check(
+    '插入真实 import { bffPlugin } from ...（非依赖字符串伪 import）',
+    /^import\s*\{\s*bffPlugin\s*\}\s*from\s*['"]@modern-js\/plugin-bff['"]/m.test(
+      sfCfg,
+    ),
+  );
+  check('普通字符串伪 import 原样保留', sfCfg.includes('const doc ='));
+
+  // B2：specifier 在但缺 export + 有调用 → 把 export 加进现有大括号，调用不重复
+  console.log(
+    '== binding: specifier present, export missing → add to braces ==',
+  );
+  const sm = prepare('v3-app-bff-specifier-missing');
+  execFileSync('node', [path.join(SCRIPTS, 'enable.mjs'), 'bff', sm.work], {
+    encoding: 'utf8',
+  });
+  const smCfg = sm.read('modern.config.ts');
+  check(
+    'bffPlugin 加进现有 import 大括号（{ other, bffPlugin }）',
+    /import\s*\{[^}]*\bother\b[^}]*\bbffPlugin\b[^}]*\}\s*from\s*['"]@modern-js\/plugin-bff['"]/.test(
+      smCfg,
+    ),
+  );
+  check(
+    'bffPlugin() 调用不重复（仍 1 处）',
+    (smCfg.match(/bffPlugin\(\)/g) || []).length === 1,
+  );
+
+  // B3：ESM alias 已启用 → 幂等（不重复 append alias 调用）
+  console.log('== idempotent: ESM alias already enabled ==');
+  const al = prepare('v3-app-bff-alias');
+  const alOut = execFileSync(
+    'node',
+    [path.join(SCRIPTS, 'enable.mjs'), 'bff', al.work, '--json'],
+    { encoding: 'utf8' },
+  );
+  check('alias 已启用：changed 为空', JSON.parse(alOut).changed.length === 0);
+  check(
+    'alias 调用不重复（bff() 仍 1 处）',
+    (al.read('modern.config.ts').match(/\bbff\(\)/g) || []).length === 1,
+  );
+
+  // B4：SSG 半启用（有 plugin、缺 output.ssg）→ 补齐 output.ssg
+  console.log(
+    '== ssg: half-enabled (plugin, no output.ssg) → add output.ssg ==',
+  );
+  const sh = prepare('v3-app-ssg-half');
+  const shScan = execFileSync(
+    'node',
+    [path.join(SCRIPTS, 'scan.mjs'), sh.work],
+    {
+      encoding: 'utf8',
+    },
+  );
+  check('scan: 半启用 SSG 不被标为已启用', /ssg（.*）：未启用/.test(shScan));
+  execFileSync('node', [path.join(SCRIPTS, 'enable.mjs'), 'ssg', sh.work], {
+    encoding: 'utf8',
+  });
+  const shCfg = sh.read('modern.config.ts');
+  check('补齐 output.ssg: true', /output\s*:\s*\{[^}]*ssg:\s*true/.test(shCfg));
+  check(
+    'ssgPlugin() 调用不重复（仍 1 处）',
+    (shCfg.match(/ssgPlugin\(\)/g) || []).length === 1,
+  );
+
   console.log(`\n结果：${pass} 通过 / ${fail} 失败`);
   if (fail > 0) process.exit(1);
   console.log('✅ feature-enable skill 验证通过');
