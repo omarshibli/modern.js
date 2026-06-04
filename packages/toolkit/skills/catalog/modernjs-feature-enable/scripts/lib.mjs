@@ -195,3 +195,141 @@ export function findConfigFile(dir) {
     exists(dir, f),
   );
 }
+
+// ---- 版本协议（与 migrate-to-v3 收敛逻辑一致）----
+// 非语义化协议：不能当固定版本处理
+export const WORKSPACE_PROTO =
+  /^(workspace:|link:|catalog:|file:|portal:|npm:|\*$)/;
+// 名称无关、可安全复用给别的包的协议（由 key 决定包）
+export const REUSABLE_PROTO = /^(workspace:|catalog:)/;
+export const isWorkspaceProto = v =>
+  v != null && WORKSPACE_PROTO.test(String(v).trim());
+
+function collectSources(dir, files = []) {
+  if (!fs.existsSync(dir)) return files;
+  for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
+    const full = path.join(dir, e.name);
+    if (e.isDirectory()) {
+      if (
+        !['node_modules', '.git', 'dist', 'build', '.agents'].includes(e.name)
+      ) {
+        collectSources(full, files);
+      }
+    } else if (
+      /\.(ts|tsx|js|jsx|mjs|cjs)$/.test(e.name) &&
+      !e.name.endsWith('.d.ts')
+    ) {
+      files.push(full);
+    }
+  }
+  return files;
+}
+
+// v2-only 结构信号（v3 不再有）。明确排除 routes / modern.runtime.ts / appTools()（v3 也有）。
+// 用于在 workspace/link 等非语义版本下区分 v2 待迁移 vs 已是 v3。
+export function detectV2Signals(dir) {
+  const configFile = findConfigFile(dir) || 'modern.config.cjs';
+  const cfgPath = path.join(dir, configFile);
+  const configText = fs.existsSync(cfgPath)
+    ? maskCommentsAndStrings(readText(cfgPath))
+    : '';
+  const pkg = exists(dir, 'package.json')
+    ? JSON.parse(readText(path.join(dir, 'package.json')))
+    : {};
+  const deps = {
+    ...pkg.dependencies,
+    ...pkg.devDependencies,
+    ...pkg.peerDependencies,
+  };
+  const files = collectSources(path.join(dir, 'src'))
+    .concat(collectSources(path.join(dir, 'server')))
+    .concat(collectSources(path.join(dir, 'api')));
+  const anyImport = mod =>
+    files.some(f => importSpecifiers(readText(f)).some(s => s.startsWith(mod)));
+  const anyCode = re =>
+    files.some(f => re.test(maskCommentsAndStrings(readText(f))));
+  const signals = [];
+  if (/\bruntime\s*:/.test(configText)) signals.push('config.runtime');
+  if (/appTools\s*\(\s*\{[^)]*\bbundler\b/.test(configText))
+    signals.push('appTools({ bundler })');
+  if (/\bapplyBaseConfig\s*\(/.test(configText))
+    signals.push('applyBaseConfig');
+  if (
+    deps['@modern-js/plugin-tailwindcss'] ||
+    /\btailwindcssPlugin\b/.test(configText)
+  ) {
+    signals.push('plugin-tailwindcss');
+  }
+  if (anyImport('@modern-js/runtime/bff')) signals.push('runtime/bff import');
+  if (anyImport('@modern-js/runtime/server'))
+    signals.push('runtime/server import');
+  if (anyCode(/\bApp\.config\b/)) signals.push('App.config');
+  if (anyCode(/\bApp\.init\b/)) signals.push('App.init');
+  if (anyCode(/\buseRuntimeContext\b/)) signals.push('useRuntimeContext');
+  if (exists(dir, 'src', 'pages') && !exists(dir, 'src', 'routes'))
+    signals.push('src/pages');
+  if (exists(dir, 'server', 'index.ts') || exists(dir, 'server', 'index.js'))
+    signals.push('自定义 server (server/index)');
+  return signals;
+}
+
+// 判定项目可启用性。返回 { state: 'v2'|'v3'|'unknown', reason, signals, appTools }
+export function classifyProject(dir) {
+  const pkg = JSON.parse(readText(path.join(dir, 'package.json')));
+  const deps = {
+    ...pkg.dependencies,
+    ...pkg.devDependencies,
+    ...pkg.peerDependencies,
+  };
+  const appTools = deps['@modern-js/app-tools'] ?? null;
+  if (appTools == null) {
+    return {
+      state: 'unknown',
+      reason:
+        '未检测到 @modern-js/app-tools：feature-enable 仅用于 Modern.js（app-tools）应用',
+      signals: [],
+      appTools: null,
+    };
+  }
+  const major = Number(String(appTools).match(/(\d+)/)?.[1]);
+  if (major === 2) {
+    return {
+      state: 'v2',
+      reason:
+        '检测到 Modern.js v2：请先用 modernjs-migrate-to-v3 升级到 v3 再启用功能',
+      signals: [],
+      appTools,
+    };
+  }
+  if (major === 3) return { state: 'v3', reason: '', signals: [], appTools };
+  // 非语义协议（workspace/link/catalog/...）：用 v2-only 信号判定，命中即按 v2 处理
+  if (isWorkspaceProto(appTools)) {
+    const signals = detectV2Signals(dir);
+    if (signals.length) {
+      return {
+        state: 'v2',
+        reason: `检测到 v2-only 信号（${signals.join(', ')}）：请先用 modernjs-migrate-to-v3 升级到 v3 再启用功能`,
+        signals,
+        appTools,
+      };
+    }
+    return { state: 'v3', reason: '', signals: [], appTools };
+  }
+  return {
+    state: 'unknown',
+    reason: `无法判定 Modern.js 版本（@modern-js/app-tools = ${appTools}）：请人工确认为 v3 后再启用`,
+    signals: [],
+    appTools,
+  };
+}
+
+// 当前已知的废弃命令（stale doc），供 report/scan 输出，避免引导用户走旧命令
+export const DEPRECATED = {
+  removedCommands: ['modern new', 'modern upgrade'],
+  evidence:
+    'guides/upgrade/other.md:107,111 —— Modern.js 3.0 已移除 modern new / modern upgrade，需按文档手动操作',
+  staleDocs: [
+    'packages/document/docs/{zh,en}/apis/app/commands.mdx 仍残留 `## modern new`，为 stale doc，不可作为现行依据',
+  ],
+  note: '本 skill 即「按文档手动启用功能」的自动化等价物；不要执行 modern new。',
+};

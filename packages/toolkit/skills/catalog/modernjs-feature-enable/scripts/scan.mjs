@@ -6,6 +6,8 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import {
+  DEPRECATED,
+  classifyProject,
   exists,
   findConfigFile,
   importSpecifiers,
@@ -27,19 +29,10 @@ function main() {
     ...pkg.devDependencies,
     ...pkg.peerDependencies,
   };
-  const appTools = deps['@modern-js/app-tools'] ?? null;
-  if (!appTools) {
-    fail(
-      '未检测到 @modern-js/app-tools：feature-enable 仅用于 Modern.js（app-tools）应用',
-    );
-  }
-  const major = Number(String(appTools).match(/(\d+)/)?.[1]);
-  // 注：v3 已移除 `modern new`，本 skill 即手动等价物（见 guides/upgrade/other.md）
-  if (major === 2) {
-    fail(
-      '检测到 Modern.js v2：请先用 modernjs-migrate-to-v3 升级到 v3 再启用功能',
-    );
-  }
+  // 统一用 classifyProject：semver 2.x、或 workspace/link 等非语义协议且命中 v2-only 信号 → 判 v2 阻断
+  const cls = classifyProject(dir);
+  if (cls.state !== 'v3') fail(cls.reason);
+  const appTools = cls.appTools;
 
   const configFile = findConfigFile(dir);
   const configText = configFile ? readText(path.join(dir, configFile)) : '';
@@ -87,6 +80,7 @@ function main() {
     migrationState: 'v3',
     configFile,
     features,
+    deprecated: DEPRECATED,
   };
   const outDir = path.join(dir, '.agents', 'runs', 'modernjs-feature-enable');
   fs.mkdirSync(outDir, { recursive: true });
@@ -103,6 +97,9 @@ function main() {
     const auto = v.automated ? '自动' : 'manual';
     console.log(`  - ${k}（${v.label}）：${status} [${auto}]`);
   }
+  console.log(
+    `\n⚠️ 废弃命令（勿引导用户使用）：${DEPRECATED.removedCommands.join(' / ')} 已在 v3 移除（${DEPRECATED.evidence}）`,
+  );
 }
 
 main();

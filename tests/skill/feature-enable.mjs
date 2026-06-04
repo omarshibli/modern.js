@@ -148,6 +148,72 @@ try {
     (cfg2.match(/bffPlugin\(\)/g) || []).length === 1,
   );
 
+  // report 含 deprecated（stale-doc）分层
+  check(
+    '[stale-doc] report.deprecated 标注 modern new/upgrade 已移除',
+    Boolean(
+      report.deprecated?.removedCommands?.includes('modern new') &&
+        /other\.md/.test(report.deprecated?.evidence ?? ''),
+    ),
+  );
+
+  // ===== 负向 1：v2 项目（semver 2.x）→ enable 中止、零改动 =====
+  console.log('== guard: v2 app (semver 2.x) must abort ==');
+  const v2 = prepare('v2-app-needs-migrate');
+  let v2Blocked = false;
+  try {
+    execFileSync('node', [path.join(SCRIPTS, 'enable.mjs'), 'bff', v2.work], {
+      encoding: 'utf8',
+      stdio: 'pipe',
+    });
+  } catch {
+    v2Blocked = true;
+  }
+  check('[guard] v2 项目 enable 非 0 中止', v2Blocked);
+  check('[guard] v2 项目未生成 api/（零改动）', !v2.has('api/lambda/index.ts'));
+  check(
+    '[guard] v2 项目未写 plugin-bff 依赖',
+    !JSON.parse(v2.read('package.json')).dependencies['@modern-js/plugin-bff'],
+  );
+  check(
+    '[guard] v2 项目无 report（未执行）',
+    !v2.has('.agents/runs/modernjs-feature-enable/report.json'),
+  );
+
+  // ===== 负向 2：workspace:* + v2-only 信号 → 按 v2 中止 =====
+  console.log('== guard: workspace + v2 signal must abort ==');
+  const wv2 = prepare('v2-workspace-signal');
+  let wv2Blocked = false;
+  try {
+    execFileSync('node', [path.join(SCRIPTS, 'enable.mjs'), 'bff', wv2.work], {
+      encoding: 'utf8',
+      stdio: 'pipe',
+    });
+  } catch {
+    wv2Blocked = true;
+  }
+  check('[guard] workspace+v2信号 enable 中止（不误判 v3）', wv2Blocked);
+
+  // ===== 负向 3：link: 协议 → enable 放行，但 plugin-bff 进 manual（不照搬错路径）=====
+  console.log('== link: protocol → mapped dep manual ==');
+  const lk = prepare('v3-app-bff-link');
+  execFileSync('node', [path.join(SCRIPTS, 'enable.mjs'), 'bff', lk.work], {
+    encoding: 'utf8',
+  });
+  const lkPkg = JSON.parse(lk.read('package.json'));
+  check(
+    '[guard] link: 协议未把 app-tools 路径写给 plugin-bff',
+    !lkPkg.dependencies['@modern-js/plugin-bff'],
+  );
+  check(
+    '[guard] link: 协议补依赖进 manual',
+    /link:.*手动添加.*plugin-bff/s.test(lk.report().manual.join('\n')),
+  );
+  check(
+    '[guard] link: 既有依赖仍可被改 config（plugins 加 bffPlugin）',
+    /bffPlugin\(\)/.test(lk.read('modern.config.ts')),
+  );
+
   console.log(`\n结果：${pass} 通过 / ${fail} 失败`);
   if (fail > 0) process.exit(1);
   console.log('✅ feature-enable skill 验证通过');

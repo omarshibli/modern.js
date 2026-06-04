@@ -7,11 +7,15 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import {
+  DEPRECATED,
+  REUSABLE_PROTO,
   appendToPluginsArray,
+  classifyProject,
   exists,
   extractBalanced,
   findConfigFile,
   importSpecifiers,
+  isWorkspaceProto,
   locateConfigObjStart,
   maskCommentsAndStrings,
   readText,
@@ -22,9 +26,7 @@ const changed = [];
 const manual = [];
 const note = (list, msg) => list.push(msg);
 
-const WORKSPACE_PROTO = /^(workspace:|link:|catalog:|file:|portal:|npm:|\*$)/;
-
-// 读取 @modern-js/app-tools 的版本，用作新装官方包的版本（官方包统一版本号发布）
+// 读取 @modern-js/app-tools 的版本/协议，用作新装官方包的版本（官方包统一版本号发布）
 function appToolsVersion(pkg) {
   return (
     pkg.devDependencies?.['@modern-js/app-tools'] ??
@@ -33,7 +35,9 @@ function appToolsVersion(pkg) {
   );
 }
 
-// 1) 依赖：加 @modern-js/plugin-bff（与 app-tools 同版本/同协议）
+// 1) 依赖：加 @modern-js/plugin-bff。版本协议处理（与 migrate-to-v3 一致）：
+//    普通 semver / workspace: / catalog:（名称无关）→ 复用 app-tools 的 spec；
+//    link: / file: / portal: / npm:（指向具体包路径/别名）→ 不写、进 manual（否则指错包）。
 function addBffDep(dir) {
   const file = path.join(dir, 'package.json');
   const pkg = JSON.parse(readText(file));
@@ -49,12 +53,19 @@ function addBffDep(dir) {
     );
     return;
   }
+  const verStr = String(ver).trim();
+  // 指向具体路径/别名的协议不能照搬给别的包
+  if (isWorkspaceProto(verStr) && !REUSABLE_PROTO.test(verStr)) {
+    note(
+      manual,
+      `@modern-js/app-tools 用 ${verStr.split(':')[0]}: 协议（指向具体包路径/别名，无法照搬给别的包）：请手动添加 @modern-js/plugin-bff 的正确依赖协议`,
+    );
+    return;
+  }
   pkg.dependencies = pkg.dependencies || {};
   pkg.dependencies['@modern-js/plugin-bff'] = ver;
   fs.writeFileSync(file, `${JSON.stringify(pkg, null, 2)}\n`);
-  const hint = WORKSPACE_PROTO.test(String(ver).trim())
-    ? ver
-    : `${ver}（与 app-tools 一致）`;
+  const hint = isWorkspaceProto(verStr) ? ver : `${ver}（与 app-tools 一致）`;
   note(changed, `依赖：添加 @modern-js/plugin-bff@${hint}`);
 }
 
@@ -240,9 +251,29 @@ function main() {
     process.exit(1);
   }
 
+  // v3 自保护（不依赖 scan）：v2 / workspace+v2信号 / 非 app-tools → 中止，**不改任何文件**
+  const cls = classifyProject(dir);
+  if (cls.state !== 'v3') {
+    console.error(
+      [
+        `⛔ 已中止（未改写任何文件）：${cls.reason}`,
+        cls.state === 'v2' ? '（feature-enable 仅用于 Modern.js v3 应用）' : '',
+      ]
+        .filter(Boolean)
+        .join('\n'),
+    );
+    process.exit(1);
+  }
+
   FEATURES[feature].run(dir);
 
-  const report = { projectDir: dir, feature, changed, manual };
+  const report = {
+    projectDir: dir,
+    feature,
+    changed,
+    manual,
+    deprecated: DEPRECATED,
+  };
   const outDir = path.join(dir, '.agents', 'runs', 'modernjs-feature-enable');
   fs.mkdirSync(outDir, { recursive: true });
   fs.writeFileSync(
