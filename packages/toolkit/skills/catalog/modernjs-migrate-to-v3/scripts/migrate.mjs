@@ -166,11 +166,12 @@ function maskComments(code) {
   return out;
 }
 
-// 提取真正的模块 specifier（import x from '...'、export ... from '...'、import '...'、
-// import('...')、require('...')）。逐字符扫描：跳过注释，遇到字符串时回看前一个 token 是否
-// 为 import/from/require( 才算 specifier——避免在普通字符串文本里裸搜包名造成误判。
-function importSpecifiers(code) {
-  const specs = [];
+// 单一扫描器：逐字符扫描 code，对每个**真实模块 specifier**（import/export-from/side-effect
+// import/dynamic import/require 的字符串）调用 visit({ content, open, close, quote })，
+// open/close 为该字符串的引号下标（含引号）。注释只跳过、**不重置 import 上下文**（保证
+// `import(/* magic */ '...')` 这类也能识别）；普通字符串文本（非 import 位置）不回调。
+// importSpecifiers / mapImportSpecifiers / tailwind 删除全部基于它，确保检测与改写完全一致。
+function eachModuleSpecifier(code, visit) {
   const n = code.length;
   let i = 0;
   let acc = ''; // 最近的代码片段（不含注释/字符串），用于判定字符串是否处于 import 位置
@@ -179,16 +180,17 @@ function importSpecifiers(code) {
     const c2 = code[i + 1];
     if (c === '/' && c2 === '/') {
       while (i < n && code[i] !== '\n') i += 1;
-      continue;
+      continue; // 跳过注释，acc 不变（保留前置 import(/from/require 上下文）
     }
     if (c === '/' && c2 === '*') {
       i += 2;
       while (i < n && !(code[i] === '*' && code[i + 1] === '/')) i += 1;
-      i += 2;
-      continue;
+      i = Math.min(i + 2, n);
+      continue; // 同上，acc 不变
     }
     if (c === '"' || c === "'" || c === '`') {
       const quote = c;
+      const open = i;
       let j = i + 1;
       let content = '';
       while (j < n && code[j] !== quote) {
@@ -200,9 +202,9 @@ function importSpecifiers(code) {
         content += code[j];
         j += 1;
       }
-      // 前一个 token 是 from / import / require( / import( 时，本字符串才是模块 specifier
+      const close = j; // 闭合引号下标（未闭合时为 n）
       if (/(?:\bfrom|\bimport|\brequire\s*\(|\bimport\s*\()\s*$/.test(acc)) {
-        specs.push(content);
+        visit({ content, open, close, quote });
       }
       i = j + 1;
       acc = '';
@@ -212,72 +214,33 @@ function importSpecifiers(code) {
     if (acc.length > 32) acc = acc.slice(-32);
     i += 1;
   }
+}
+
+// 真实模块 specifier 列表（仅用于检测）
+function importSpecifiers(code) {
+  const specs = [];
+  eachModuleSpecifier(code, ({ content }) => specs.push(content));
   return specs;
 }
 
-// 与 importSpecifiers 同一套扫描逻辑，但**改写**真实 module specifier：mapper(spec) 返回新 spec
-// 则替换、返回 null 则保留。注释和普通字符串原样保留（不会被全文 split/join 改坏）。
+// 改写真实模块 specifier：mapper(spec) 返回新 spec 则替换、返回 null 则保留。
+// 基于 specifier range 替换，注释/普通字符串原样保留。
 function mapImportSpecifiers(code, mapper) {
-  let out = '';
-  const n = code.length;
-  let i = 0;
-  let acc = '';
-  let changed = false;
-  while (i < n) {
-    const c = code[i];
-    const c2 = code[i + 1];
-    if (c === '/' && c2 === '/') {
-      let j = i;
-      while (j < n && code[j] !== '\n') j += 1;
-      out += code.slice(i, j);
-      acc = ' ';
-      i = j;
-      continue;
+  const edits = [];
+  eachModuleSpecifier(code, ({ content, open, close, quote }) => {
+    const mapped = mapper(content);
+    if (mapped != null && mapped !== content) {
+      edits.push({ open, close, text: quote + mapped + quote });
     }
-    if (c === '/' && c2 === '*') {
-      let j = i + 2;
-      while (j < n && !(code[j] === '*' && code[j + 1] === '/')) j += 1;
-      j = Math.min(j + 2, n);
-      out += code.slice(i, j);
-      acc = ' ';
-      i = j;
-      continue;
-    }
-    if (c === '"' || c === "'" || c === '`') {
-      const quote = c;
-      let j = i + 1;
-      let content = '';
-      while (j < n && code[j] !== quote) {
-        if (code[j] === '\\') {
-          content += code[j] + (code[j + 1] ?? '');
-          j += 2;
-          continue;
-        }
-        content += code[j];
-        j += 1;
-      }
-      const closing = j < n ? quote : '';
-      const isImport =
-        /(?:\bfrom|\bimport|\brequire\s*\(|\bimport\s*\()\s*$/.test(acc);
-      let final = content;
-      if (isImport) {
-        const mapped = mapper(content);
-        if (mapped != null && mapped !== content) {
-          final = mapped;
-          changed = true;
-        }
-      }
-      out += quote + final + closing;
-      i = j + 1;
-      acc = '';
-      continue;
-    }
-    out += c;
-    acc += c;
-    if (acc.length > 32) acc = acc.slice(-32);
-    i += 1;
+  });
+  if (!edits.length) return { code, changed: false };
+  let out = code;
+  // 从后往前替换，避免下标偏移
+  edits.sort((a, b) => b.open - a.open);
+  for (const e of edits) {
+    out = out.slice(0, e.open) + e.text + out.slice(e.close + 1);
   }
-  return { code: out, changed };
+  return { code: out, changed: true };
 }
 
 // 取对象字面量 `{...}` 的顶层属性片段（忽略嵌套/注释/字符串），用于只识别顶层字段
@@ -329,6 +292,27 @@ function locateConfigObjStart(code, maskedText) {
   const me = masked.match(/module\.exports\s*=\s*\{/);
   if (me) return me.index + me[0].length - 1;
   return -1;
+}
+
+// 在配置对象 [objStart, objEnd) 内查找**顶层**（相对配置对象括号深度为 0）的 `key: {`，
+// 返回 { keyStart, brace }（brace 为 `{` 下标）或 null。基于 masked，注释/字符串里的 key 不算。
+function findTopLevelKey(masked, objStart, objEnd, key) {
+  const re = new RegExp(`\\b${key}\\s*:\\s*\\{`, 'g');
+  let m = re.exec(masked);
+  while (m !== null) {
+    const idx = m.index;
+    if (idx > objStart && idx < objEnd) {
+      let d = 0;
+      for (let i = objStart + 1; i < idx; i++) {
+        const ch = masked[i];
+        if (ch === '{' || ch === '[' || ch === '(') d += 1;
+        else if (ch === '}' || ch === ']' || ch === ')') d -= 1;
+      }
+      if (d === 0) return { keyStart: idx, brace: idx + m[0].length - 1 };
+    }
+    m = re.exec(masked);
+  }
+  return null;
 }
 
 // 把 bffPlugin() **追加到** 顶层 plugins 数组末尾（保留原插件顺序，避免插到 appTools 之前）
@@ -617,18 +601,16 @@ function migrateConfig(dir) {
   // 这里只做 tailwind 等安全的移除
   const wrapped = /\bapplyBaseConfig\s*\(/.test(masked);
 
-  // dev.port -> server.port：只移动 port，保留 dev 块其余配置；解析不了则进人工清单
-  const devMatch = wrapped ? null : masked.match(/\bdev\s*:\s*\{/);
-  if (devMatch) {
-    const block = extractBalanced(
-      code,
-      devMatch.index + devMatch[0].length - 1,
-      masked,
-    );
+  // dev.port -> server.port：**只迁配置对象顶层** dev.port（嵌套如 tools.dev.port / dev.client.port 不动）
+  const objStart = wrapped ? -1 : locateConfigObjStart(code, masked);
+  const obj = objStart !== -1 ? extractBalanced(code, objStart, masked) : null;
+  const devKey = obj ? findTopLevelKey(masked, objStart, obj.end, 'dev') : null;
+  if (devKey) {
+    const block = extractBalanced(code, devKey.brace, masked);
     if (!block) {
       note(manual, 'dev 块解析失败：dev.port 需人工迁到 server.port');
     } else {
-      // 只识别**顶层** dev.port；嵌套（如 dev.client.port）不动
+      // 只识别 dev 块**自身顶层**的 port；嵌套（dev.client.port）不动
       const props = topLevelProps(block.body);
       const portIdx = props.findIndex(p => /^['"]?port['"]?\s*:/.test(p));
       if (portIdx !== -1) {
@@ -638,28 +620,30 @@ function migrateConfig(dir) {
         const rest = props.filter((_, i) => i !== portIdx);
         const devReplacement = rest.length ? `dev: { ${rest.join(', ')} }` : '';
         code =
-          code.slice(0, devMatch.index) +
+          code.slice(0, devKey.keyStart) +
           devReplacement +
           code.slice(block.end);
         if (!devReplacement) code = code.replace(/,(\s*[,)\]\n])/, '$1');
-        // 重新 mask 后再定位 server/配置对象（注释里的 server: 不参与）
+        // 重新 mask + 定位配置对象，注入到**顶层** server（注释/嵌套 server 不算）
         const masked2 = maskCommentsAndStrings(code);
-        const server = masked2.match(/\bserver\s*:\s*\{/);
-        if (server) {
-          const at = server.index + server[0].length;
+        const objStart2 = locateConfigObjStart(code, masked2);
+        const obj2 =
+          objStart2 !== -1 ? extractBalanced(code, objStart2, masked2) : null;
+        const srvKey = obj2
+          ? findTopLevelKey(masked2, objStart2, obj2.end, 'server')
+          : null;
+        if (srvKey) {
+          const at = srvKey.brace + 1;
           code = `${code.slice(0, at)} port: ${port},${code.slice(at)}`;
           note(changed, 'dev.port → server.port');
+        } else if (objStart2 !== -1) {
+          code = `${code.slice(0, objStart2 + 1)}\n  server: { port: ${port} },${code.slice(objStart2 + 1)}`;
+          note(changed, 'dev.port → server.port');
         } else {
-          const os = locateConfigObjStart(code, masked2);
-          if (os !== -1) {
-            code = `${code.slice(0, os + 1)}\n  server: { port: ${port} },${code.slice(os + 1)}`;
-            note(changed, 'dev.port → server.port');
-          } else {
-            note(
-              manual,
-              'dev.port 已识别但无法定位配置对象注入 server：请手动迁到 server.port',
-            );
-          }
+          note(
+            manual,
+            'dev.port 已识别但无法定位配置对象注入 server：请手动迁到 server.port',
+          );
         }
       }
     }
@@ -683,17 +667,20 @@ function migrateConfig(dir) {
     for (let k = ranges.length - 1; k >= 0; k -= 1) {
       code = code.slice(0, ranges[k][0]) + code.slice(ranges[k][1]);
     }
-    // 2) 移除真实的 @modern-js/plugin-tailwindcss import 行（import 路径是字符串，用 maskComments
-    //    只去注释、保留字符串；注释行被 mask 掉则不匹配、保持原样）
-    code = code
-      .split('\n')
-      .filter(
-        line =>
-          !/from\s+['"]@modern-js\/plugin-tailwindcss['"]/.test(
-            maskComments(line),
-          ),
-      )
-      .join('\n');
+    // 2) 移除真实的 @modern-js/plugin-tailwindcss import 行：用 scanner 找**真实 import specifier**
+    //    的 offset，删除其所在行；注释/普通字符串里出现的同名文本不会被报为 specifier、不删。
+    const lineRanges = [];
+    eachModuleSpecifier(code, ({ content, open, close }) => {
+      if (content !== '@modern-js/plugin-tailwindcss') return;
+      const lineStart = code.lastIndexOf('\n', open) + 1;
+      const nl = code.indexOf('\n', close);
+      const lineEnd = nl === -1 ? code.length : nl + 1;
+      lineRanges.push([lineStart, lineEnd]);
+    });
+    lineRanges.sort((a, b) => b[0] - a[0]);
+    for (const [s, e] of lineRanges) code = code.slice(0, s) + code.slice(e);
+    // 3) 清理移除后残留的悬挂逗号（如 [appTools(), ] → [appTools()]）
+    code = code.replace(/,\s*([)\]])/g, '$1');
   }
 
   if (code !== before) {

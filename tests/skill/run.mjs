@@ -831,6 +831,73 @@ try {
       /router:\s*true/.test(dc2.read('src/modern.runtime.ts')),
   );
 
+  // C24. blocker：带 magic comment 的真实 dynamic import / require 也要迁移（scanner 检测/改写一致）
+  console.log(
+    '== C24. v2-edge-dynamic-import-comment (magic-comment import/require) ==',
+  );
+  const di = prepare('v2-edge-dynamic-import-comment');
+  const diLazy = di.read('src/lazy.ts');
+  check(
+    'dynamic import(/* magic */ ...) 改写为 plugin-bff/runtime',
+    diLazy.includes('@modern-js/plugin-bff/runtime') &&
+      !diLazy.includes('@modern-js/runtime/bff'),
+  );
+  check(
+    'require(/* comment */ ...) 改写为 server-runtime',
+    diLazy.includes('@modern-js/server-runtime') &&
+      !diLazy.includes('@modern-js/runtime/server'),
+  );
+  const diDeps = JSON.parse(di.read('package.json')).dependencies;
+  check(
+    '补 plugin-bff + server-runtime 依赖',
+    diDeps['@modern-js/plugin-bff'] === '3.0.0' &&
+      diDeps['@modern-js/server-runtime'] === '3.0.0',
+  );
+  check(
+    'config 加入 bffPlugin()',
+    /bffPlugin\(\)/.test(di.read('modern.config.ts')),
+  );
+
+  // C25. blocker：嵌套 tools.dev.port 不被误迁成顶层 server.port
+  console.log('== C25. v2-edge-tools-dev-nested (nested tools.dev.port) ==');
+  const td = prepare('v2-edge-tools-dev-nested');
+  const tdCfg = td.read('modern.config.ts');
+  check(
+    '嵌套 tools.dev.port 原样保留（7777 未被搬走）',
+    /tools\s*:\s*\{[\s\S]*dev:\s*\{[^}]*port:\s*7777/.test(tdCfg),
+  );
+  check('未创建顶层 server.port', !/server\s*:\s*\{[^}]*port/.test(tdCfg));
+  check(
+    'report 未把 dev.port 标为自动迁移',
+    !td.report().changed.some(c => /dev\.port/.test(c)),
+  );
+
+  // C26. blocker：tailwind 移除只删真实 import 行，不删普通字符串行；plugins 无悬挂逗号
+  console.log(
+    '== C26. v2-edge-tailwind-string-line (string line not deleted) ==',
+  );
+  const tl = prepare('v2-edge-tailwind-string-line');
+  const tlCfg = tl.read('modern.config.ts');
+  check(
+    '普通字符串行（含 plugin-tailwindcss 文本）保留',
+    tlCfg.includes("example text: from '@modern-js/plugin-tailwindcss'"),
+  );
+  check(
+    '真实 tailwind import 行已删除',
+    !/import\s*\{\s*tailwindcssPlugin\s*\}\s*from/.test(tlCfg),
+  );
+  check(
+    'tailwindcssPlugin() 调用移除且无悬挂逗号',
+    /plugins\s*:\s*\[\s*appTools\(\)\s*\]/.test(tlCfg),
+  );
+  check('生成 postcss.config.cjs', tl.has('postcss.config.cjs'));
+  check(
+    '移除 @modern-js/plugin-tailwindcss 依赖',
+    !JSON.parse(tl.read('package.json')).devDependencies[
+      '@modern-js/plugin-tailwindcss'
+    ],
+  );
+
   console.log(`\n结果：${pass} 通过 / ${fail} 失败`);
   if (fail > 0) process.exit(1);
   console.log('✅ migrate-to-v3 skill 迁移验证通过');
