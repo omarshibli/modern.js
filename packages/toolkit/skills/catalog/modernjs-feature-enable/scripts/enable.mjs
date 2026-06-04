@@ -21,6 +21,7 @@ import {
   isWorkspaceProto,
   locateConfigObjStart,
   maskCommentsAndStrings,
+  outputSsgState,
   readText,
   topLevelPluginsHasCall,
   topLevelProps,
@@ -173,41 +174,32 @@ function setOutputSsg(dir) {
     return;
   }
   const props = topLevelProps(obj.body);
-  const outIdx = props.findIndex(p => /^output\s*:/.test(p));
+  // 结构化解析 output 顶层 ssg 状态（不吃字符串/注释/嵌套字段）
+  const st = outputSsgState(code);
   let newProps;
   let noteMsg = `配置 ${configFile}：output 合并 ssg: true`;
-  if (outIdx === -1) {
+  if (st.state === 'no-output') {
     newProps = [...props, 'output: { ssg: true }'];
+  } else if (st.state === 'output-not-object') {
+    note(manual, 'output 不是对象字面量：请手动设置 output.ssg = true');
+    return;
+  } else if (st.state === 'byEntries' || st.state === 'truthy') {
+    note(
+      manual,
+      `已配置 output.${st.state === 'byEntries' ? 'ssgByEntries' : 'ssg（真值）'}：未覆盖，请确认是否符合 SSG 预期`,
+    );
+    return;
   } else {
-    const outMasked = maskCommentsAndStrings(props[outIdx]);
-    if (/\bssgByEntries\b/.test(outMasked)) {
-      note(
-        manual,
-        '已配置 output.ssgByEntries：未改动，请确认是否符合 SSG 预期',
-      );
-      return;
-    }
-    const sm = outMasked.match(/\bssg\s*:\s*([^,}\n]+)/);
-    if (sm && /^false\b/.test(sm[1].trim())) {
-      // 显式 ssg: false：按启用意图改为 true（其它真值则视为已启用、不动）
-      const merged = props[outIdx].replace(/(\bssg\s*:\s*)false\b/, '$1true');
-      newProps = props.map((p, i) => (i === outIdx ? merged : p));
+    // 'false'（翻成 true）或 'none'（新增顶层 ssg）：重建 output 顶层属性
+    const outProps = st.outProps.slice();
+    if (st.state === 'false') {
+      outProps[st.ssgIdx] = 'ssg: true';
       noteMsg = `配置 ${configFile}：output.ssg false → true（按启用意图）`;
-    } else if (sm) {
-      note(
-        manual,
-        '已存在 output.ssg（真值）：未覆盖，请确认其值是否符合 SSG 预期',
-      );
-      return;
     } else {
-      const k = props[outIdx].indexOf('{');
-      if (k === -1) {
-        note(manual, 'output 不是对象字面量：请手动设置 output.ssg = true');
-        return;
-      }
-      const merged = `${props[outIdx].slice(0, k + 1)} ssg: true,${props[outIdx].slice(k + 1)}`;
-      newProps = props.map((p, i) => (i === outIdx ? merged : p));
+      outProps.push('ssg: true');
     }
+    const newOutProp = `output: { ${outProps.join(', ')} }`;
+    newProps = props.map((p, i) => (i === st.outIdx ? newOutProp : p));
   }
   const newObj = `{\n  ${newProps.join(',\n  ')},\n}`;
   const next = code.slice(0, objStart) + newObj + code.slice(obj.end);

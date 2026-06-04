@@ -415,21 +415,42 @@ export function isPluginEnabled(code, importPkg, exportName) {
   return topLevelPluginsHasCall(code, b.localName);
 }
 
-// 顶层 output 是否**真正开启** SSG（按值语义，依据 output/ssg.mdx：boolean true 才开启）。
-// `ssgByEntries` 任意配置即视为开启；`ssg: false` 不算；`ssg: true`/对象/数组算开启。
-export function hasOutputSsg(code) {
+// 结构化解析顶层 output.ssg 状态（只看 **output 对象的顶层属性**，不吃字符串/注释/嵌套字段）。
+// 返回 { outIdx, outProps } 供改写复用；及 state：
+//   'no-output' 无顶层 output | 'output-not-object' output 非对象字面量 |
+//   'byEntries' 顶层 ssgByEntries | 'false' 顶层 ssg:false | 'truthy' 顶层 ssg 真值 | 'none' 无顶层 ssg
+export function outputSsgState(code) {
   const masked = maskCommentsAndStrings(code);
   const objStart = locateConfigObjStart(code, masked);
-  if (objStart === -1) return false;
+  if (objStart === -1) return { state: 'no-output' };
   const obj = extractBalanced(code, objStart, masked);
-  if (!obj) return false;
-  const outProp = topLevelProps(obj.body).find(p => /^output\s*:/.test(p));
-  if (!outProp) return false;
-  const m = maskCommentsAndStrings(outProp);
-  if (/\bssgByEntries\b/.test(m)) return true;
-  const sm = m.match(/\bssg\s*:\s*([^,}\n]+)/);
-  if (!sm) return false;
-  return !/^false\b/.test(sm[1].trim());
+  if (!obj) return { state: 'no-output' };
+  const props = topLevelProps(obj.body);
+  const outIdx = props.findIndex(p => /^output\s*:/.test(p));
+  if (outIdx === -1) return { state: 'no-output', props, outIdx: -1 };
+  const outProp = props[outIdx];
+  const bi = maskCommentsAndStrings(outProp).indexOf('{');
+  if (bi === -1) return { state: 'output-not-object', props, outIdx };
+  const outBody = extractBalanced(outProp, bi);
+  if (!outBody) return { state: 'output-not-object', props, outIdx };
+  const outProps = topLevelProps(outBody.body);
+  const base = { props, outIdx, outProps };
+  if (outProps.some(p => /^ssgByEntries\s*:/.test(p)))
+    return { state: 'byEntries', ...base };
+  const ssgIdx = outProps.findIndex(p => /^ssg\s*:/.test(p));
+  if (ssgIdx === -1) return { state: 'none', ...base };
+  const val = outProps[ssgIdx].slice(outProps[ssgIdx].indexOf(':') + 1).trim();
+  return {
+    state: /^false\b/.test(maskCommentsAndStrings(val)) ? 'false' : 'truthy',
+    ssgIdx,
+    ...base,
+  };
+}
+
+// 顶层 output 是否**真正开启** SSG（ssgByEntries 或顶层 ssg 真值；ssg:false 不算）
+export function hasOutputSsg(code) {
+  const s = outputSsgState(code).state;
+  return s === 'byEntries' || s === 'truthy';
 }
 
 // 定位 modern.config 文件

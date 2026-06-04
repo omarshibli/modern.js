@@ -419,6 +419,33 @@ try {
   );
   check('未残留 ssg: false', !/\bssg\s*:\s*false\b/.test(sffCfg));
 
+  // B7：output.ssg 结构化改写——只翻顶层真实 ssg，不动字符串/注释/嵌套 experimental.ssg
+  console.log(
+    '== ssg: structural output.ssg (string/comment/nested untouched) ==',
+  );
+  const to = prepare('v3-app-ssg-tricky-output');
+  execFileSync('node', [path.join(SCRIPTS, 'enable.mjs'), 'ssg', to.work], {
+    encoding: 'utf8',
+  });
+  const toCfg = to.read('modern.config.ts');
+  check('顶层 output.ssg false → true', /\bssg\s*:\s*true\b/.test(toCfg));
+  check(
+    '字符串 "ssg: false in a string" 原样保留',
+    toCfg.includes('ssg: false in a string'),
+  );
+  check(
+    '注释 // ssg: false 原样保留',
+    toCfg.includes('// ssg: false in a comment'),
+  );
+  check(
+    '嵌套 experimental: { ssg: false } 原样保留',
+    /experimental\s*:\s*\{\s*ssg\s*:\s*false\s*\}/.test(toCfg),
+  );
+  check(
+    'output.ssg true 仅 1 处（未误翻其它）',
+    (toCfg.match(/\bssg\s*:\s*true\b/g) || []).length === 1,
+  );
+
   console.log(`\n结果：${pass} 通过 / ${fail} 失败`);
   if (fail > 0) process.exit(1);
   console.log('✅ feature-enable skill 验证通过');
