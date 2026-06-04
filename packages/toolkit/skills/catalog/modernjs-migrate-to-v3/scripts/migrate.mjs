@@ -203,8 +203,14 @@ function eachModuleSpecifier(code, visit) {
         j += 1;
       }
       const close = j; // 闭合引号下标（未闭合时为 n）
-      if (/(?:\bfrom|\bimport|\brequire\s*\(|\bimport\s*\()\s*$/.test(acc)) {
-        visit({ content, open, close, quote });
+      // 分类 import 上下文：dynamic（import(...)）/ require（require(...)）/ static（from / 副作用 import）
+      let kind = null;
+      if (/\bimport\s*\(\s*$/.test(acc)) kind = 'dynamic';
+      else if (/\brequire\s*\(\s*$/.test(acc)) kind = 'require';
+      else if (/\bfrom\s*$/.test(acc) || /\bimport\s*$/.test(acc))
+        kind = 'static';
+      if (kind) {
+        visit({ content, open, close, quote, kind });
       }
       i = j + 1;
       acc = '';
@@ -342,7 +348,9 @@ function appendToPluginsArray(prop, call) {
 }
 
 // ---- 1) 依赖 ----
-function migrateDeps(dir, toVersion) {
+// opts.keepTailwindDep=true 时保留 @modern-js/plugin-tailwindcss（config 用 dynamic import/require
+// 等不安全方式引用、无法自动迁移时，不删依赖以免加载缺模块，交 manual）
+function migrateDeps(dir, toVersion, opts = {}) {
   const file = path.join(dir, 'package.json');
   const pkg = JSON.parse(readText(file));
   let bumped = false;
@@ -351,12 +359,14 @@ function migrateDeps(dir, toVersion) {
   for (const field of ['dependencies', 'devDependencies', 'peerDependencies']) {
     const deps = pkg[field];
     if (!deps) continue;
-    if (deps['@modern-js/plugin-tailwindcss']) {
+    if (deps['@modern-js/plugin-tailwindcss'] && !opts.keepTailwindDep) {
       delete deps['@modern-js/plugin-tailwindcss'];
       tailwindRemoved = true;
     }
     for (const name of Object.keys(deps)) {
       if (!name.startsWith('@modern-js/')) continue;
+      // 保留的 plugin-tailwindcss 不升版本（v3 无此包，升到 3.0.0 会指向不存在版本）
+      if (name === '@modern-js/plugin-tailwindcss') continue;
       // workspace/link/catalog 协议：随 monorepo 升级，不改成固定版本（否则破坏 workspace 链接）
       if (isWorkspaceProto(deps[name])) {
         skippedWorkspace.add(name);
@@ -680,12 +690,18 @@ function migrateConfig(dir) {
     for (let k = callRanges.length - 1; k >= 0; k -= 1) {
       code = code.slice(0, callRanges[k][0]) + code.slice(callRanges[k][1]);
     }
-    // 2) 移除真实的 @modern-js/plugin-tailwindcss import：按 scanner 的真实 specifier offset
-    //    反推**完整 import/export 声明 range**（支持多行），整条删除；字符串/注释不碰。
+    // 2) 移除真实的 @modern-js/plugin-tailwindcss import。**只处理 static import/export**：
+    //    按 scanner 的真实 specifier offset 反推完整声明 range（支持多行）整条删除。
+    //    dynamic import / require 这类无法安全删语句 → 不动、进 manual（依赖也由 main 保留）。
     const masked2 = maskCommentsAndStrings(code);
     const stmtRanges = [];
-    eachModuleSpecifier(code, ({ content, open, close }) => {
+    let unsafeTw = false;
+    eachModuleSpecifier(code, ({ content, open, close, kind }) => {
       if (content !== '@modern-js/plugin-tailwindcss') return;
+      if (kind !== 'static') {
+        unsafeTw = true;
+        return;
+      }
       // 声明起点：specifier 前最近的 import/export 关键字（masked 词边界）+ 吞同行前导缩进
       let start = -1;
       const re = /\b(?:import|export)\b/g;
@@ -712,6 +728,12 @@ function migrateConfig(dir) {
     });
     stmtRanges.sort((a, b) => b[0] - a[0]);
     for (const [s, e] of stmtRanges) code = code.slice(0, s) + code.slice(e);
+    if (unsafeTw) {
+      note(
+        manual,
+        'modern.config 用 dynamic import / require 引用 @modern-js/plugin-tailwindcss：无法安全自动删除（依赖已保留），请手动改为 Rsbuild 原生 Tailwind 并移除该引用与依赖',
+      );
+    }
   }
 
   if (code !== before) {
@@ -1230,6 +1252,25 @@ function detectV2Signals(dir, pkg) {
   return signals;
 }
 
+// modern.config 是否用 dynamic import / require（非 static）引用 @modern-js/plugin-tailwindcss
+function hasUnsafeTailwindUsage(dir) {
+  const configFile = [
+    'modern.config.ts',
+    'modern.config.js',
+    'modern.config.mjs',
+    'modern.config.cjs',
+  ].find(f => exists(dir, f));
+  if (!configFile) return false;
+  const code = readText(path.join(dir, configFile));
+  let unsafe = false;
+  eachModuleSpecifier(code, ({ content, kind }) => {
+    if (content === '@modern-js/plugin-tailwindcss' && kind !== 'static') {
+      unsafe = true;
+    }
+  });
+  return unsafe;
+}
+
 function main() {
   const args = process.argv.slice(2);
   const dir = path.resolve(args.find(a => !a.startsWith('--')) || '.');
@@ -1267,7 +1308,10 @@ function main() {
     }
   }
 
-  migrateDeps(dir, toVersion);
+  // config 用 dynamic import / require 引用 plugin-tailwindcss 时无法安全自动迁移：保留依赖（交 manual）
+  migrateDeps(dir, toVersion, {
+    keepTailwindDep: hasUnsafeTailwindUsage(dir),
+  });
   const files = collectSources(path.join(dir, 'src'))
     .concat(collectSources(path.join(dir, 'server')))
     .concat(collectSources(path.join(dir, 'api')));

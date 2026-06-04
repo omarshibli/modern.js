@@ -927,6 +927,49 @@ try {
     /plugins\s*:\s*\[\s*appTools\(\)\s*\]/.test(mlCfg),
   );
 
+  // C28. blocker：dynamic import 的 tailwind 不被当 static 声明删坏 → 保留 + manual + 依赖不删
+  console.log(
+    '== C28. v2-edge-tailwind-dynamic-import (dynamic ≠ static decl) ==',
+  );
+  const dyi = prepare('v2-edge-tailwind-dynamic-import');
+  const dyiCfg = dyi.read('modern.config.ts');
+  check(
+    'dynamic import 语句原样保留（无 `return)` 语法损坏）',
+    dyiCfg.includes("import('@modern-js/plugin-tailwindcss')") &&
+      !/return\s*\)/.test(dyiCfg),
+  );
+  check(
+    'plugin-tailwindcss 依赖保留（未删、未升到不存在的 3.0.0）',
+    JSON.parse(dyi.read('package.json')).devDependencies[
+      '@modern-js/plugin-tailwindcss'
+    ] === '2.66.0',
+  );
+  check(
+    'dynamic/require tailwind 引用进 manual',
+    /dynamic import \/ require 引用 @modern-js\/plugin-tailwindcss/.test(
+      dyi.report().manual.join('\n'),
+    ),
+  );
+
+  // C29. blocker：require 的 tailwind 不残留成断链（依赖保留 + manual）
+  console.log('== C29. v2-edge-tailwind-require (CJS require) ==');
+  const rq = prepare('v2-edge-tailwind-require');
+  const rqCfg = rq.read('modern.config.ts');
+  check(
+    'require 语句原样保留（不被删成断链）',
+    rqCfg.includes("require('@modern-js/plugin-tailwindcss')"),
+  );
+  check(
+    'plugin-tailwindcss 依赖保留（与 require 一致，config 仍可加载）',
+    JSON.parse(rq.read('package.json')).devDependencies[
+      '@modern-js/plugin-tailwindcss'
+    ] === '2.66.0',
+  );
+  check(
+    'require 用法进 manual',
+    /dynamic import \/ require/.test(rq.report().manual.join('\n')),
+  );
+
   console.log(`\n结果：${pass} 通过 / ${fail} 失败`);
   if (fail > 0) process.exit(1);
   console.log('✅ migrate-to-v3 skill 迁移验证通过');
