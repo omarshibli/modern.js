@@ -181,20 +181,29 @@ function setOutputSsg(dir) {
   if (st.state === 'no-output') {
     newProps = [...props, 'output: { ssg: true }'];
   } else if (st.state === 'output-not-object') {
-    note(manual, 'output 不是对象字面量：请手动设置 output.ssg = true');
-    return;
-  } else if (st.state === 'byEntries' || st.state === 'truthy') {
     note(
       manual,
-      `已配置 output.${st.state === 'byEntries' ? 'ssgByEntries' : 'ssg（真值）'}：未覆盖，请确认是否符合 SSG 预期`,
+      'output 值不是对象字面量（动态表达式/函数调用等）：请手动设置 output.ssg = true',
+    );
+    return;
+  } else if (st.state === 'ssg-dynamic') {
+    note(
+      manual,
+      'output.ssg 是动态/无法静态确认的值：请手动确认是否启用 SSG（应为 true 或对象）',
+    );
+    return;
+  } else if (st.state === 'byEntries' || st.state === 'ssg-enabling') {
+    note(
+      manual,
+      `已配置 output.${st.state === 'byEntries' ? 'ssgByEntries' : 'ssg（true/对象）'}：未覆盖，请确认是否符合 SSG 预期`,
     );
     return;
   } else {
-    // 'false'（翻成 true）或 'none'（新增顶层 ssg）：重建 output 顶层属性
+    // 'ssg-off'（false/undefined/null/0/'' → 翻 true）或 'none'（新增顶层 ssg）：重建 output 顶层属性
     const outProps = st.outProps.slice();
-    if (st.state === 'false') {
+    if (st.state === 'ssg-off') {
       outProps[st.ssgIdx] = 'ssg: true';
-      noteMsg = `配置 ${configFile}：output.ssg false → true（按启用意图）`;
+      noteMsg = `配置 ${configFile}：output.ssg 非启用值 → true（按启用意图）`;
     } else {
       outProps.push('ssg: true');
     }

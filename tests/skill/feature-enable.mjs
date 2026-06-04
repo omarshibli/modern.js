@@ -446,6 +446,41 @@ try {
     (toCfg.match(/\bssg\s*:\s*true\b/g) || []).length === 1,
   );
 
+  // B8：output 值非对象字面量（动态表达式）→ 进 manual，不改坏表达式
+  console.log('== ssg: output value is expression → manual (untouched) ==');
+  const oe = prepare('v3-app-ssg-output-expr');
+  execFileSync('node', [path.join(SCRIPTS, 'enable.mjs'), 'ssg', oe.work], {
+    encoding: 'utf8',
+  });
+  const oeCfg = oe.read('modern.config.ts');
+  check(
+    '动态 output 表达式原样保留',
+    oeCfg.includes('makeOutput({ ssg: false })'),
+  );
+  check(
+    'output 非对象字面量进 manual',
+    /output 值不是对象字面量/.test(oe.report().manual.join('\n')),
+  );
+
+  // B9：output.ssg 值为 undefined（非启用字面量）→ scan 未启用 + enable 翻 true
+  console.log('== ssg: output.ssg undefined ≠ enabled → flip ==');
+  const su = prepare('v3-app-ssg-undefined');
+  const suScan = execFileSync(
+    'node',
+    [path.join(SCRIPTS, 'scan.mjs'), su.work],
+    { encoding: 'utf8' },
+  );
+  check(
+    'scan: output.ssg undefined 不被标已启用',
+    /ssg（.*）：未启用/.test(suScan),
+  );
+  execFileSync('node', [path.join(SCRIPTS, 'enable.mjs'), 'ssg', su.work], {
+    encoding: 'utf8',
+  });
+  const suCfg = su.read('modern.config.ts');
+  check('output.ssg undefined → true', /\bssg\s*:\s*true\b/.test(suCfg));
+  check('未残留 ssg: undefined', !/\bssg\s*:\s*undefined\b/.test(suCfg));
+
   console.log(`\n结果：${pass} 通过 / ${fail} 失败`);
   if (fail > 0) process.exit(1);
   console.log('✅ feature-enable skill 验证通过');

@@ -415,10 +415,27 @@ export function isPluginEnabled(code, importPkg, exportName) {
   return topLevelPluginsHasCall(code, b.localName);
 }
 
-// 结构化解析顶层 output.ssg 状态（只看 **output 对象的顶层属性**，不吃字符串/注释/嵌套字段）。
-// 返回 { outIdx, outProps } 供改写复用；及 state：
-//   'no-output' 无顶层 output | 'output-not-object' output 非对象字面量 |
-//   'byEntries' 顶层 ssgByEntries | 'false' 顶层 ssg:false | 'truthy' 顶层 ssg 真值 | 'none' 无顶层 ssg
+// 把 ssg 的值（masked）归类：'enabling'（true / 对象 / 数组）| 'off'（false/undefined/null/0/空串）|
+// 'dynamic'（标识符/调用/三元等无法静态确认）。依据 output/ssg.mdx：boolean true 或 object 才开启。
+function classifySsgValue(maskedVal) {
+  const v = maskedVal.trim();
+  if (v.startsWith('{') || v.startsWith('[') || /^true\b/.test(v))
+    return 'enabling';
+  if (
+    /^(false|undefined|null)\b/.test(v) ||
+    /^0(\b|$)/.test(v) ||
+    v === "''" ||
+    v === '""' ||
+    v === '``'
+  ) {
+    return 'off';
+  }
+  return 'dynamic';
+}
+
+// 结构化解析顶层 output.ssg 状态（只看 **output 对象字面量的顶层属性**，不吃字符串/注释/嵌套字段/动态表达式）。
+// state：'no-output' | 'output-not-object'（output 值非对象字面量）| 'byEntries' |
+//        'none'（无顶层 ssg）| 'ssg-enabling' | 'ssg-off' | 'ssg-dynamic'
 export function outputSsgState(code) {
   const masked = maskCommentsAndStrings(code);
   const objStart = locateConfigObjStart(code, masked);
@@ -429,9 +446,13 @@ export function outputSsgState(code) {
   const outIdx = props.findIndex(p => /^output\s*:/.test(p));
   if (outIdx === -1) return { state: 'no-output', props, outIdx: -1 };
   const outProp = props[outIdx];
-  const bi = maskCommentsAndStrings(outProp).indexOf('{');
-  if (bi === -1) return { state: 'output-not-object', props, outIdx };
-  const outBody = extractBalanced(outProp, bi);
+  const om = maskCommentsAndStrings(outProp);
+  // **output 的值本身必须是对象字面量**（冒号后第一个非空白字符是 `{`），否则不解析（动态表达式）
+  const colon = om.indexOf(':');
+  let vs = colon + 1;
+  while (vs < om.length && /\s/.test(om[vs])) vs += 1;
+  if (om[vs] !== '{') return { state: 'output-not-object', props, outIdx };
+  const outBody = extractBalanced(outProp, vs);
   if (!outBody) return { state: 'output-not-object', props, outIdx };
   const outProps = topLevelProps(outBody.body);
   const base = { props, outIdx, outProps };
@@ -439,18 +460,15 @@ export function outputSsgState(code) {
     return { state: 'byEntries', ...base };
   const ssgIdx = outProps.findIndex(p => /^ssg\s*:/.test(p));
   if (ssgIdx === -1) return { state: 'none', ...base };
-  const val = outProps[ssgIdx].slice(outProps[ssgIdx].indexOf(':') + 1).trim();
-  return {
-    state: /^false\b/.test(maskCommentsAndStrings(val)) ? 'false' : 'truthy',
-    ssgIdx,
-    ...base,
-  };
+  const val = outProps[ssgIdx].slice(outProps[ssgIdx].indexOf(':') + 1);
+  const cls = classifySsgValue(maskCommentsAndStrings(val));
+  return { state: `ssg-${cls}`, ssgIdx, ...base };
 }
 
-// 顶层 output 是否**真正开启** SSG（ssgByEntries 或顶层 ssg 真值；ssg:false 不算）
+// 顶层 output 是否**真正开启** SSG（ssgByEntries 或顶层 ssg 为 true/对象；false/undefined/动态不算）
 export function hasOutputSsg(code) {
   const s = outputSsgState(code).state;
-  return s === 'byEntries' || s === 'truthy';
+  return s === 'byEntries' || s === 'ssg-enabling';
 }
 
 // 定位 modern.config 文件
