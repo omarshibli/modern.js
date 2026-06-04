@@ -656,31 +656,62 @@ function migrateConfig(dir) {
   );
   if (hasTwImport || /\btailwindcssPlugin\s*\(/.test(maskedTw)) {
     hadTailwind = true;
-    // 1) 移除真实 tailwindcssPlugin() 调用（按 masked 定位，原文同索引删除，从后往前）
-    const reTw = /tailwindcssPlugin\s*\(\s*\)\s*,?/g;
-    const ranges = [];
+    // 1) 移除真实 tailwindcssPlugin() 调用，并**顺带吞掉紧邻的一个逗号**（优先后、否则前），
+    //    全部基于 masked 真实代码位置定位、原文同索引删除；不动字符串/注释、不做全文 replace。
+    const reTw = /tailwindcssPlugin\s*\(\s*\)/g;
+    const callRanges = [];
     let mm = reTw.exec(maskedTw);
     while (mm !== null) {
-      ranges.push([mm.index, mm.index + mm[0].length]);
+      let s = mm.index;
+      let e = mm.index + mm[0].length;
+      let k = e;
+      while (k < maskedTw.length && /[ \t]/.test(maskedTw[k])) k += 1;
+      if (maskedTw[k] === ',') {
+        e = k + 1; // 吞掉后面的逗号 + 其后空格
+        while (e < maskedTw.length && /[ \t]/.test(maskedTw[e])) e += 1;
+      } else {
+        let p = s - 1;
+        while (p >= 0 && /\s/.test(maskedTw[p])) p -= 1;
+        if (maskedTw[p] === ',') s = p; // 末元素：吞掉前面的逗号
+      }
+      callRanges.push([s, e]);
       mm = reTw.exec(maskedTw);
     }
-    for (let k = ranges.length - 1; k >= 0; k -= 1) {
-      code = code.slice(0, ranges[k][0]) + code.slice(ranges[k][1]);
+    for (let k = callRanges.length - 1; k >= 0; k -= 1) {
+      code = code.slice(0, callRanges[k][0]) + code.slice(callRanges[k][1]);
     }
-    // 2) 移除真实的 @modern-js/plugin-tailwindcss import 行：用 scanner 找**真实 import specifier**
-    //    的 offset，删除其所在行；注释/普通字符串里出现的同名文本不会被报为 specifier、不删。
-    const lineRanges = [];
+    // 2) 移除真实的 @modern-js/plugin-tailwindcss import：按 scanner 的真实 specifier offset
+    //    反推**完整 import/export 声明 range**（支持多行），整条删除；字符串/注释不碰。
+    const masked2 = maskCommentsAndStrings(code);
+    const stmtRanges = [];
     eachModuleSpecifier(code, ({ content, open, close }) => {
       if (content !== '@modern-js/plugin-tailwindcss') return;
-      const lineStart = code.lastIndexOf('\n', open) + 1;
-      const nl = code.indexOf('\n', close);
-      const lineEnd = nl === -1 ? code.length : nl + 1;
-      lineRanges.push([lineStart, lineEnd]);
+      // 声明起点：specifier 前最近的 import/export 关键字（masked 词边界）+ 吞同行前导缩进
+      let start = -1;
+      const re = /\b(?:import|export)\b/g;
+      let km = re.exec(masked2);
+      while (km !== null) {
+        if (km.index >= open) break;
+        start = km.index;
+        km = re.exec(masked2);
+      }
+      if (start === -1) return;
+      while (
+        start > 0 &&
+        (code[start - 1] === ' ' || code[start - 1] === '\t')
+      ) {
+        start -= 1;
+      }
+      // 声明终点：闭引号后跳过可选 `;` 与行尾换行
+      let end = close + 1;
+      while (end < code.length && /[ \t]/.test(code[end])) end += 1;
+      if (code[end] === ';') end += 1;
+      if (code[end] === '\r') end += 1;
+      if (code[end] === '\n') end += 1;
+      stmtRanges.push([start, end]);
     });
-    lineRanges.sort((a, b) => b[0] - a[0]);
-    for (const [s, e] of lineRanges) code = code.slice(0, s) + code.slice(e);
-    // 3) 清理移除后残留的悬挂逗号（如 [appTools(), ] → [appTools()]）
-    code = code.replace(/,\s*([)\]])/g, '$1');
+    stmtRanges.sort((a, b) => b[0] - a[0]);
+    for (const [s, e] of stmtRanges) code = code.slice(0, s) + code.slice(e);
   }
 
   if (code !== before) {

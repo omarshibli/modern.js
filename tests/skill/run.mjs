@@ -883,6 +883,10 @@ try {
     tlCfg.includes("example text: from '@modern-js/plugin-tailwindcss'"),
   );
   check(
+    '字符串里的 , ] / , ) 不被悬挂逗号清理误改',
+    tlCfg.includes('keep comma, ] and comma, ) in this string'),
+  );
+  check(
     '真实 tailwind import 行已删除',
     !/import\s*\{\s*tailwindcssPlugin\s*\}\s*from/.test(tlCfg),
   );
@@ -896,6 +900,31 @@ try {
     !JSON.parse(tl.read('package.json')).devDependencies[
       '@modern-js/plugin-tailwindcss'
     ],
+  );
+
+  // C27. blocker：多行 tailwind import 删除完整声明，不留半截语法
+  console.log(
+    '== C27. v2-edge-tailwind-multiline-import (full decl removal) ==',
+  );
+  const ml = prepare('v2-edge-tailwind-multiline-import');
+  const mlCfg = ml.read('modern.config.ts');
+  check(
+    '多行 import 完整删除（无 plugin-tailwindcss 残留）',
+    !mlCfg.includes('plugin-tailwindcss'),
+  );
+  check(
+    '不留半截 import 片段（无悬空 tailwindcssPlugin 标识符）',
+    !/\btailwindcssPlugin\b/.test(mlCfg),
+  );
+  check(
+    'appTools import / defineConfig 完好',
+    /import\s*\{\s*appTools\s*,\s*defineConfig\s*\}\s*from\s*['"]@modern-js\/app-tools['"]/.test(
+      mlCfg,
+    ) && /export default defineConfig\(\{[\s\S]*appTools\(\)/.test(mlCfg),
+  );
+  check(
+    'plugins 数组干净（[appTools()]）',
+    /plugins\s*:\s*\[\s*appTools\(\)\s*\]/.test(mlCfg),
   );
 
   console.log(`\n结果：${pass} 通过 / ${fail} 失败`);
