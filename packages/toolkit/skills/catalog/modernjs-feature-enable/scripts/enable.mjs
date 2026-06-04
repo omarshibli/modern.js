@@ -192,10 +192,28 @@ function setOutputSsg(dir) {
       'output.ssg 是动态/无法静态确认的值：请手动确认是否启用 SSG（应为 true 或对象）',
     );
     return;
-  } else if (st.state === 'byEntries' || st.state === 'ssg-enabling') {
+  } else if (st.state === 'ssg-invalid') {
     note(
       manual,
-      `已配置 output.${st.state === 'byEntries' ? 'ssgByEntries' : 'ssg（true/对象）'}：未覆盖，请确认是否符合 SSG 预期`,
+      'output.ssg 是数组等非法字面量（类型应为 boolean | object）：请手动修正为 true 或对象',
+    );
+    return;
+  } else if (st.state === 'byEntries-enabling' || st.state === 'ssg-enabling') {
+    note(
+      manual,
+      `已配置 output.${st.state === 'byEntries-enabling' ? 'ssgByEntries（已有入口启用）' : 'ssg（true/对象）'}：未覆盖，请确认是否符合 SSG 预期`,
+    );
+    return;
+  } else if (st.state === 'byEntries-off') {
+    note(
+      manual,
+      'output.ssgByEntries 非空但所有入口均为非启用值：请手动开启所需入口，或改用 output.ssg = true（非空 ssgByEntries 会优先于顶层 ssg）',
+    );
+    return;
+  } else if (st.state === 'byEntries-dynamic') {
+    note(
+      manual,
+      'output.ssgByEntries 含动态/无法静态确认的值：请手动确认是否已按预期启用所需入口',
     );
     return;
   } else {

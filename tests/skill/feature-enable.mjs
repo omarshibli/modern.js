@@ -498,6 +498,97 @@ try {
       !/\bssg\s*:\s*true\b/.test(oaCfg),
   );
 
+  // B11：output.ssg 值为数组（类型非法 boolean|object）→ scan 不算已启用 + enable 进 manual
+  console.log('== ssg: output.ssg array value is invalid → manual ==');
+  const av = prepare('v3-app-ssg-array-value');
+  const avScan = execFileSync(
+    'node',
+    [path.join(SCRIPTS, 'scan.mjs'), av.work],
+    { encoding: 'utf8' },
+  );
+  check('scan: output.ssg 数组值不算已启用', /ssg（.*）：未启用/.test(avScan));
+  execFileSync('node', [path.join(SCRIPTS, 'enable.mjs'), 'ssg', av.work], {
+    encoding: 'utf8',
+  });
+  const avCfg = av.read('modern.config.ts');
+  check('output.ssg 数组值原样保留（未误翻 true）', /ssg:\s*\[\]/.test(avCfg));
+  check(
+    'output.ssg 数组值进 manual（非法字面量）',
+    /非法字面量/.test(av.report().manual.join('\n')),
+  );
+
+  // B12：ssgByEntries 值语义（与 ssg 同一套）—— 源码 util.ts:117 / adapterSSR.ts:214
+  console.log('== ssg: ssgByEntries value semantics ==');
+  // (a) 空对象 {} → 源码忽略，回落普通 ssg → scan 未启用 + enable 补 ssg: true（保留空 ssgByEntries）
+  const be = prepare('v3-app-ssg-byentries-empty');
+  const beScan = execFileSync(
+    'node',
+    [path.join(SCRIPTS, 'scan.mjs'), be.work],
+    { encoding: 'utf8' },
+  );
+  check('scan: ssgByEntries:{} 不算已启用', /ssg（.*）：未启用/.test(beScan));
+  execFileSync('node', [path.join(SCRIPTS, 'enable.mjs'), 'ssg', be.work], {
+    encoding: 'utf8',
+  });
+  const beCfg = be.read('modern.config.ts');
+  check(
+    'ssgByEntries:{} → 补 output.ssg: true（保留空对象）',
+    /\bssg\s*:\s*true\b/.test(beCfg) && /ssgByEntries:\s*\{\s*\}/.test(beCfg),
+  );
+
+  // (b) 全 false → scan 未启用 + enable 进 manual、原样不动
+  const bf = prepare('v3-app-ssg-byentries-false');
+  const bfScan = execFileSync(
+    'node',
+    [path.join(SCRIPTS, 'scan.mjs'), bf.work],
+    { encoding: 'utf8' },
+  );
+  check(
+    'scan: ssgByEntries 全 false 不算已启用',
+    /ssg（.*）：未启用/.test(bfScan),
+  );
+  execFileSync('node', [path.join(SCRIPTS, 'enable.mjs'), 'ssg', bf.work], {
+    encoding: 'utf8',
+  });
+  const bfCfg = bf.read('modern.config.ts');
+  check(
+    'ssgByEntries 全 false → manual、不静默改写',
+    /所有入口均为非启用值/.test(bf.report().manual.join('\n')) &&
+      /main:\s*false,\s*home:\s*false/.test(bfCfg) &&
+      !/\bssg\s*:\s*true\b/.test(bfCfg),
+  );
+
+  // (c) 动态 entry 值 → scan 未启用 + enable 进 manual 要求人工确认
+  const bd = prepare('v3-app-ssg-byentries-dynamic');
+  const bdScan = execFileSync(
+    'node',
+    [path.join(SCRIPTS, 'scan.mjs'), bd.work],
+    { encoding: 'utf8' },
+  );
+  check(
+    'scan: ssgByEntries 动态值不算已启用',
+    /ssg（.*）：未启用/.test(bdScan),
+  );
+  execFileSync('node', [path.join(SCRIPTS, 'enable.mjs'), 'ssg', bd.work], {
+    encoding: 'utf8',
+  });
+  check(
+    'ssgByEntries 动态值 → manual（要求人工确认）',
+    /含动态\/无法静态确认/.test(bd.report().manual.join('\n')),
+  );
+
+  // (d) 任一 entry 为 true → 算已启用
+  const bt = prepare('v3-app-ssg-byentries-true');
+  const btScan = execFileSync(
+    'node',
+    [path.join(SCRIPTS, 'scan.mjs'), bt.work],
+    { encoding: 'utf8' },
+  );
+  check(
+    'scan: ssgByEntries 含 true 算已启用',
+    /ssg（.*）：已启用/.test(btScan),
+  );
+
   console.log(`\n结果：${pass} 通过 / ${fail} 失败`);
   if (fail > 0) process.exit(1);
   console.log('✅ feature-enable skill 验证通过');

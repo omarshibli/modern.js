@@ -415,12 +415,13 @@ export function isPluginEnabled(code, importPkg, exportName) {
   return topLevelPluginsHasCall(code, b.localName);
 }
 
-// 把 ssg 的值（masked）归类：'enabling'（true / 对象 / 数组）| 'off'（false/undefined/null/0/空串）|
-// 'dynamic'（标识符/调用/三元等无法静态确认）。依据 output/ssg.mdx：boolean true 或 object 才开启。
+// 把 ssg 的值（masked）归类：'enabling'（true / 对象）| 'off'（false/undefined/null/0/空串）|
+// 'invalid'（数组等非 boolean|object 的字面量，类型不接受）| 'dynamic'（标识符/调用/三元等无法静态确认）。
+// 依据 output/ssg.mdx 与类型 `boolean | SSGConfig`：只有 boolean true 或对象才是合法静态开启形态，数组不是。
 function classifySsgValue(maskedVal) {
   const v = maskedVal.trim();
-  if (v.startsWith('{') || v.startsWith('[') || /^true\b/.test(v))
-    return 'enabling';
+  if (v.startsWith('{') || /^true\b/.test(v)) return 'enabling';
+  if (v.startsWith('[')) return 'invalid';
   if (
     /^(false|undefined|null)\b/.test(v) ||
     /^0(\b|$)/.test(v) ||
@@ -433,9 +434,47 @@ function classifySsgValue(maskedVal) {
   return 'dynamic';
 }
 
+// 把 ssgByEntries 的值（原始片段）按源码语义归类：
+//   依据 `packages/cli/plugin-ssg/src/libs/util.ts:117`（`Object.keys(...).length > 0` 才激活，空对象忽略回落普通 ssg）
+//   与 `builderPlugins/adapterSSR.ts:214`（按 `ssgByEntries[name]` 逐入口判真值）；类型 `Record<string, boolean | SSGOptions>`，false 是合法关闭值。
+//   返回：'enabling'（任一 entry 为 true/对象）| 'off'（非空但所有 entry 都是 false/0/null/undefined/空串）|
+//        'empty'（空对象 {} → 源码忽略，回落普通 ssg）| 'dynamic'（含动态/无法静态确认的 entry 值，且无任一静态启用）|
+//        'not-object'（ssgByEntries 值本身不是对象字面量，动态表达式）。
+function classifyByEntries(rawVal) {
+  const masked = maskCommentsAndStrings(rawVal);
+  const t = masked.trim();
+  if (!t.startsWith('{')) return 'not-object';
+  const start = masked.indexOf('{');
+  const bal = extractBalanced(rawVal, start);
+  if (!bal) return 'not-object';
+  const entries = topLevelProps(bal.body);
+  if (entries.length === 0) return 'empty';
+  let hasEnabling = false;
+  let hasUnknown = false;
+  for (const entry of entries) {
+    const em = maskCommentsAndStrings(entry);
+    const colon = em.indexOf(':');
+    if (colon === -1) {
+      // 展开/简写（...spread、shorthand）等无法静态确认
+      hasUnknown = true;
+      continue;
+    }
+    const cls = classifySsgValue(
+      maskCommentsAndStrings(entry.slice(colon + 1)),
+    );
+    if (cls === 'enabling') hasEnabling = true;
+    else if (cls !== 'off') hasUnknown = true; // 'dynamic' / 'invalid'
+  }
+  if (hasEnabling) return 'enabling';
+  if (hasUnknown) return 'dynamic';
+  return 'off';
+}
+
 // 结构化解析顶层 output.ssg 状态（只看 **output 对象字面量的顶层属性**，不吃字符串/注释/嵌套字段/动态表达式）。
 // state：'no-output' | 'output-not-object'（output 值非对象字面量）| 'byEntries' |
-//        'none'（无顶层 ssg）| 'ssg-enabling' | 'ssg-off' | 'ssg-dynamic'
+//        'none'（无顶层 ssg）| 'ssg-enabling' | 'ssg-off' | 'ssg-invalid'（数组等非法字面量）| 'ssg-dynamic'
+//        | 'byEntries-enabling' | 'byEntries-off'（非空但全关）| 'byEntries-dynamic'（含动态值/值非对象）
+//   注：空 ssgByEntries({}) 源码忽略，回落普通 ssg 分类。
 export function outputSsgState(code) {
   const masked = maskCommentsAndStrings(code);
   const objStart = locateConfigObjStart(code, masked);
@@ -456,19 +495,29 @@ export function outputSsgState(code) {
   if (!outBody) return { state: 'output-not-object', props, outIdx };
   const outProps = topLevelProps(outBody.body);
   const base = { props, outIdx, outProps };
-  if (outProps.some(p => /^ssgByEntries\s*:/.test(p)))
-    return { state: 'byEntries', ...base };
+  const byIdx = outProps.findIndex(p => /^ssgByEntries\s*:/.test(p));
   const ssgIdx = outProps.findIndex(p => /^ssg\s*:/.test(p));
-  if (ssgIdx === -1) return { state: 'none', ...base };
+  if (byIdx !== -1) {
+    const byVal = outProps[byIdx].slice(outProps[byIdx].indexOf(':') + 1);
+    const b = classifyByEntries(byVal);
+    if (b === 'enabling')
+      return { state: 'byEntries-enabling', byIdx, ssgIdx, ...base };
+    if (b === 'off') return { state: 'byEntries-off', byIdx, ssgIdx, ...base };
+    if (b === 'dynamic' || b === 'not-object')
+      return { state: 'byEntries-dynamic', byIdx, ssgIdx, ...base };
+    // b === 'empty'：源码忽略空 ssgByEntries，回落到普通 ssg 分类
+  }
+  if (ssgIdx === -1) return { state: 'none', byIdx, ...base };
   const val = outProps[ssgIdx].slice(outProps[ssgIdx].indexOf(':') + 1);
   const cls = classifySsgValue(maskCommentsAndStrings(val));
-  return { state: `ssg-${cls}`, ssgIdx, ...base };
+  return { state: `ssg-${cls}`, ssgIdx, byIdx, ...base };
 }
 
-// 顶层 output 是否**真正开启** SSG（ssgByEntries 或顶层 ssg 为 true/对象；false/undefined/动态不算）
+// 顶层 output 是否**真正开启** SSG（任一入口启用的 ssgByEntries 或顶层 ssg 为 true/对象；
+// false/undefined/动态/空对象/全关都不算）
 export function hasOutputSsg(code) {
   const s = outputSsgState(code).state;
-  return s === 'byEntries' || s === 'ssg-enabling';
+  return s === 'byEntries-enabling' || s === 'ssg-enabling';
 }
 
 // 定位 modern.config 文件
