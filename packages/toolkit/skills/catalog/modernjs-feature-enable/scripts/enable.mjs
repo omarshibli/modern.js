@@ -175,26 +175,44 @@ function setOutputSsg(dir) {
   const props = topLevelProps(obj.body);
   const outIdx = props.findIndex(p => /^output\s*:/.test(p));
   let newProps;
+  let noteMsg = `配置 ${configFile}：output 合并 ssg: true`;
   if (outIdx === -1) {
     newProps = [...props, 'output: { ssg: true }'];
   } else {
-    // 已有 output 块：若已含 ssg 则不动，否则在其 `{` 后补 ssg: true
-    if (/\bssg\b/.test(maskCommentsAndStrings(props[outIdx]))) {
-      note(manual, '已存在 output.ssg：未覆盖，请确认其值是否符合 SSG 预期');
+    const outMasked = maskCommentsAndStrings(props[outIdx]);
+    if (/\bssgByEntries\b/.test(outMasked)) {
+      note(
+        manual,
+        '已配置 output.ssgByEntries：未改动，请确认是否符合 SSG 预期',
+      );
       return;
     }
-    const k = props[outIdx].indexOf('{');
-    if (k === -1) {
-      note(manual, 'output 不是对象字面量：请手动设置 output.ssg = true');
+    const sm = outMasked.match(/\bssg\s*:\s*([^,}\n]+)/);
+    if (sm && /^false\b/.test(sm[1].trim())) {
+      // 显式 ssg: false：按启用意图改为 true（其它真值则视为已启用、不动）
+      const merged = props[outIdx].replace(/(\bssg\s*:\s*)false\b/, '$1true');
+      newProps = props.map((p, i) => (i === outIdx ? merged : p));
+      noteMsg = `配置 ${configFile}：output.ssg false → true（按启用意图）`;
+    } else if (sm) {
+      note(
+        manual,
+        '已存在 output.ssg（真值）：未覆盖，请确认其值是否符合 SSG 预期',
+      );
       return;
+    } else {
+      const k = props[outIdx].indexOf('{');
+      if (k === -1) {
+        note(manual, 'output 不是对象字面量：请手动设置 output.ssg = true');
+        return;
+      }
+      const merged = `${props[outIdx].slice(0, k + 1)} ssg: true,${props[outIdx].slice(k + 1)}`;
+      newProps = props.map((p, i) => (i === outIdx ? merged : p));
     }
-    const merged = `${props[outIdx].slice(0, k + 1)} ssg: true,${props[outIdx].slice(k + 1)}`;
-    newProps = props.map((p, i) => (i === outIdx ? merged : p));
   }
   const newObj = `{\n  ${newProps.join(',\n  ')},\n}`;
   const next = code.slice(0, objStart) + newObj + code.slice(obj.end);
   fs.writeFileSync(file, next);
-  note(changed, `配置 ${configFile}：output 合并 ssg: true`);
+  note(changed, noteMsg);
 }
 
 // 3) tsconfig：加 @api/* 路径别名 + include 加 api（依据 components/enable-bff.mdx）

@@ -373,6 +373,52 @@ try {
     (shCfg.match(/ssgPlugin\(\)/g) || []).length === 1,
   );
 
+  // B5：type-only import 不算 value 绑定 → 另插一条 value import，type import 原样
+  console.log('== binding: import type ≠ value binding ==');
+  const ti = prepare('v3-app-bff-type-import');
+  execFileSync('node', [path.join(SCRIPTS, 'enable.mjs'), 'bff', ti.work], {
+    encoding: 'utf8',
+  });
+  const tiCfg = ti.read('modern.config.ts');
+  check(
+    'import type 原样保留（未被塞入 bffPlugin）',
+    /import\s+type\s*\{\s*BffConfig\s*\}\s*from\s*['"]@modern-js\/plugin-bff['"]/.test(
+      tiCfg,
+    ),
+  );
+  check(
+    '另插一条 value import { bffPlugin }',
+    /^import\s*\{\s*bffPlugin\s*\}\s*from\s*['"]@modern-js\/plugin-bff['"]/m.test(
+      tiCfg,
+    ),
+  );
+  check(
+    'plugins 追加 bffPlugin()',
+    /plugins\s*:\s*\[[^\]]*bffPlugin\(\)/.test(tiCfg),
+  );
+
+  // B6：output.ssg: false 不算已启用 → scan 未启用 + enable 翻成 true
+  console.log('== ssg: output.ssg false ≠ enabled → flip to true ==');
+  const sff = prepare('v3-app-ssg-false');
+  const sffScan = execFileSync(
+    'node',
+    [path.join(SCRIPTS, 'scan.mjs'), sff.work],
+    { encoding: 'utf8' },
+  );
+  check(
+    'scan: output.ssg:false 不被标为已启用',
+    /ssg（.*）：未启用/.test(sffScan),
+  );
+  execFileSync('node', [path.join(SCRIPTS, 'enable.mjs'), 'ssg', sff.work], {
+    encoding: 'utf8',
+  });
+  const sffCfg = sff.read('modern.config.ts');
+  check(
+    'output.ssg: false → true（按启用意图）',
+    /\bssg\s*:\s*true\b/.test(sffCfg),
+  );
+  check('未残留 ssg: false', !/\bssg\s*:\s*false\b/.test(sffCfg));
+
   console.log(`\n结果：${pass} 通过 / ${fail} 失败`);
   if (fail > 0) process.exit(1);
   console.log('✅ feature-enable skill 验证通过');

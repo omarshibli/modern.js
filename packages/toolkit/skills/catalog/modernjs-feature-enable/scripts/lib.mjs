@@ -251,6 +251,14 @@ const reEsc = s => s.replace(/[.*+?^${}()|[\]\\/]/g, '\\$&');
 // 返回 { localName, hasBinding, hasRealImport }：
 //   hasBinding=true 表示 name 已绑定（localName 为其本地名，含 alias）；
 //   hasRealImport=true 表示 importPkg 有真实 import/require（即使没解构出 name）。
+// 是否 `import type ...`（整条 type-only import，运行时被擦除，不是 value 绑定）。
+// beforeMasked：masked 代码到 specifier 路径之前；cut：`{` 或路径下标。
+function isTypeOnlyStaticImport(beforeMasked, cut) {
+  const li = beforeMasked.slice(0, cut).lastIndexOf('import');
+  if (li === -1) return false;
+  return /\bimport\s+type\b/.test(beforeMasked.slice(li, cut + 1));
+}
+
 export function resolvePluginBinding(code, importPkg, name) {
   const masked = maskCommentsAndStrings(code); // 注释+字符串都抹，定位真实代码括号
   let result = { localName: null, hasBinding: false, hasRealImport: false };
@@ -258,19 +266,24 @@ export function resolvePluginBinding(code, importPkg, name) {
     if (result.hasBinding) return;
     if (content !== importPkg) return;
     if (kind !== 'static' && kind !== 'require') return;
-    result.hasRealImport = true;
-    // 该 specifier 路径之前最近的真实 `{...}`（import/require 的解构）
     const beforeMasked = masked.slice(0, open);
     const braceClose = beforeMasked.lastIndexOf('}');
-    if (braceClose === -1) return;
-    const braceOpen = beforeMasked.lastIndexOf('{', braceClose);
-    if (braceOpen === -1) return;
-    // 确认该大括号确实属于本条 import/require（`} from '` 或 `} = require('`）
-    const between = beforeMasked.slice(braceClose + 1, open);
-    const ok =
-      /^\s*from\s*$/.test(between) || /^\s*=\s*require\s*\(\s*$/.test(between);
-    if (!ok) return;
+    const braceOpen =
+      braceClose === -1 ? -1 : beforeMasked.lastIndexOf('{', braceClose);
+    const between =
+      braceClose === -1 ? '' : beforeMasked.slice(braceClose + 1, open);
+    const isDestructured =
+      braceOpen !== -1 &&
+      (/^\s*from\s*$/.test(between) ||
+        /^\s*=\s*require\s*\(\s*$/.test(between));
+    // 整条 type-only import（仅 static 可能）→ 不是 value import，忽略（hasRealImport 不置位）
+    const cut = braceOpen !== -1 ? braceOpen : open;
+    if (kind === 'static' && isTypeOnlyStaticImport(beforeMasked, cut)) return;
+    result.hasRealImport = true; // value 形式的真实 import（默认/副作用/解构）
+    if (!isDestructured) return;
     const names = code.slice(braceOpen + 1, braceClose); // 真实代码片段
+    // inline type 说明符 `{ type bffPlugin }` 也不是 value 绑定
+    if (new RegExp(`\\btype\\s+${reEsc(name)}\\b`).test(names)) return;
     const m = names.match(
       new RegExp(`\\b${reEsc(name)}\\b\\s*(?:(?:as|:)\\s*(\\w+))?`),
     );
@@ -294,7 +307,7 @@ export function ensureNamedImport(code, importPkg, name) {
   const masked = maskCommentsAndStrings(code);
   const pkg = reEsc(importPkg);
 
-  // 包已有真实 import/require 且是解构形式但缺 name → 把 name 加进大括号
+  // 包已有真实 **value** 解构 import/require 但缺 name → 把 name 加进大括号（跳过 type-only）
   if (found.hasRealImport) {
     let next = null;
     eachModuleSpecifier(code, ({ content, open, kind }) => {
@@ -312,6 +325,13 @@ export function ensureNamedImport(code, importPkg, name) {
       ) {
         return;
       }
+      // type-only import 不能塞 value 绑定
+      if (
+        kind === 'static' &&
+        isTypeOnlyStaticImport(beforeMasked, braceOpen)
+      ) {
+        return;
+      }
       const inner = code.slice(braceOpen + 1, braceClose).trim();
       const merged = inner ? `${inner.replace(/,\s*$/, '')}, ${name}` : name;
       next = `${code.slice(0, braceOpen + 1)} ${merged} ${code.slice(braceClose)}`;
@@ -320,7 +340,7 @@ export function ensureNamedImport(code, importPkg, name) {
       const verify = resolvePluginBinding(next, importPkg, name);
       if (verify.hasBinding) return { code: next, localName: name };
     }
-    // 非解构形式（默认/副作用 import）或无法安全合并 → 退到「另插一条」
+    // type-only / 默认 / 副作用 import 或无法安全合并 → 退到「另插一条 value import」
   }
 
   // 包未引入（或无法合并）：按模块风格新插一条
@@ -395,7 +415,8 @@ export function isPluginEnabled(code, importPkg, exportName) {
   return topLevelPluginsHasCall(code, b.localName);
 }
 
-// 顶层 output 是否已配置 ssg / ssgByEntries（SSG 双条件之一）
+// 顶层 output 是否**真正开启** SSG（按值语义，依据 output/ssg.mdx：boolean true 才开启）。
+// `ssgByEntries` 任意配置即视为开启；`ssg: false` 不算；`ssg: true`/对象/数组算开启。
 export function hasOutputSsg(code) {
   const masked = maskCommentsAndStrings(code);
   const objStart = locateConfigObjStart(code, masked);
@@ -404,7 +425,11 @@ export function hasOutputSsg(code) {
   if (!obj) return false;
   const outProp = topLevelProps(obj.body).find(p => /^output\s*:/.test(p));
   if (!outProp) return false;
-  return /\b(ssg|ssgByEntries)\b/.test(maskCommentsAndStrings(outProp));
+  const m = maskCommentsAndStrings(outProp);
+  if (/\bssgByEntries\b/.test(m)) return true;
+  const sm = m.match(/\bssg\s*:\s*([^,}\n]+)/);
+  if (!sm) return false;
+  return !/^false\b/.test(sm[1].trim());
 }
 
 // 定位 modern.config 文件
