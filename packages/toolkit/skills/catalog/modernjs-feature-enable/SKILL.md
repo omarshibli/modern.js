@@ -15,12 +15,12 @@ description: 在已有的 Modern.js 3.0 应用里启用可选功能（BFF、自�
 | 功能 | 参数值 | 状态 | 现行依据（当前仓库文档） |
 | --- | --- | --- | --- |
 | BFF（一体化后端） | `bff` | ✅ 自动化 | `guides/advanced-features/bff.mdx`、`components/enable-bff.mdx` |
+| 静态站点生成 SSG | `ssg` | ✅ 自动化 | `components/enable-ssg.mdx`、`configure/app/output/ssg.mdx` |
 | 自定义 Web Server | `server` | 📝 manual | `references/other-features.md` |
 | Tailwind CSS | `tailwindcss` | 📝 manual | `references/other-features.md` |
-| 静态站点生成 SSG | `ssg` | 📝 manual | `references/other-features.md` |
 | 微前端（Garfish） | `microFrontend` | 📝 manual | `references/other-features.md` |
 
-> 第一版仅 BFF 做完整自动化闭环；其余功能先给出基于当前文档的人工步骤，后续逐个自动化。
+> 已自动化：BFF、SSG（完整闭环）；其余功能先给出基于当前文档的人工步骤，后续逐个自动化。
 
 ## 执行步骤
 
@@ -48,6 +48,16 @@ node scripts/enable.mjs bff <projectDir>
 - **scaffold**：无 `api/` 时生成 `api/lambda/index.ts` 示例函数（已有 `api/` 不覆盖）
 
 查看 `.agents/runs/modernjs-feature-enable/report.json` 的 `changed` / `manual`。
+
+**SSG（自动化）**：
+
+```bash
+node scripts/enable.mjs ssg <projectDir>
+```
+
+自动完成（依据 `components/enable-ssg.mdx`）：添加 `@modern-js/plugin-ssg`（同 app-tools 版本）、`plugins` 追加 `ssgPlugin()`、顶层 `output` 合并 `ssg: true`（已有 output 不覆盖其它字段）。详见 `references/enable-ssg.md`。
+
+> CJS（`module.exports`/`require`）配置会插入 `const { xxxPlugin } = require(...)`；插入失败或无法确定绑定时进人工清单，不写运行时未定义的半成品。
 
 **其它功能（manual）**：读 `references/other-features.md`，按当前文档手动启用。
 

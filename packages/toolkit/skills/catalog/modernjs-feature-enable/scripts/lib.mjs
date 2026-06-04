@@ -62,6 +62,61 @@ export function maskCommentsAndStrings(code) {
   return out;
 }
 
+// 只剥离注释、保留字符串原样（等长），用于需要字符串「值」（如 import 路径）的匹配
+export function maskComments(code) {
+  let out = '';
+  const n = code.length;
+  let i = 0;
+  while (i < n) {
+    const c = code[i];
+    const c2 = code[i + 1];
+    if (c === '/' && c2 === '/') {
+      out += '  ';
+      i += 2;
+      while (i < n && code[i] !== '\n') {
+        out += ' ';
+        i += 1;
+      }
+      continue;
+    }
+    if (c === '/' && c2 === '*') {
+      out += '  ';
+      i += 2;
+      while (i < n && !(code[i] === '*' && code[i + 1] === '/')) {
+        out += code[i] === '\n' ? '\n' : ' ';
+        i += 1;
+      }
+      if (i < n) {
+        out += '  ';
+        i += 2;
+      }
+      continue;
+    }
+    if (c === '"' || c === "'" || c === '`') {
+      const quote = c;
+      out += c;
+      i += 1;
+      while (i < n && code[i] !== quote) {
+        if (code[i] === '\\') {
+          out += code[i] + (code[i + 1] ?? '');
+          i += 2;
+          continue;
+        }
+        out += code[i];
+        i += 1;
+      }
+      if (i < n) {
+        out += quote;
+        i += 1;
+      }
+      continue;
+    }
+    out += c;
+    i += 1;
+  }
+  return out;
+}
+
 // 单一扫描器：对每个真实模块 specifier（import/export-from/side-effect/dynamic/require）回调
 export function eachModuleSpecifier(code, visit) {
   const n = code.length;
@@ -187,6 +242,86 @@ export function appendToPluginsArray(prop, call) {
     .replace(/,\s*$/, '');
   const newInner = inner ? `${inner}, ${call}` : call;
   return `${prop.slice(0, arrStart)}[${newInner}]${prop.slice(arrEnd + 1)}`;
+}
+
+const reEsc = s => s.replace(/[.*+?^${}()|[\]\\/]/g, '\\$&');
+
+// 确保 code 里有 `name`（来自 importPkg）的命名绑定。已有则返回其本地名；没有则按模块风格
+// （ESM import / CJS require）插入一条，插到最后一条 import/require 后、否则文件顶部（跳过开头注释）。
+// 返回 { code, localName } 成功 | { manual } 无法可靠处理（不写半成品）。
+export function ensureNamedImport(code, importPkg, name) {
+  const masked = maskComments(code); // 注释剥离、字符串（含 import 路径）保留
+  const pkg = reEsc(importPkg);
+  // 已有 ESM import { ... } from 'pkg'
+  const esm = masked.match(
+    new RegExp(`import\\s*\\{([^}]*)\\}\\s*from\\s*['"]${pkg}['"]`),
+  );
+  if (esm) {
+    const m = esm[1].match(new RegExp(`\\b${name}\\b(?:\\s+as\\s+(\\w+))?`));
+    if (m) return { code, localName: m[1] || name };
+    return {
+      manual: `已 import ${importPkg} 但未导入 ${name}：请手动把 ${name} 加进 import 再使用`,
+    };
+  }
+  // 已有 CJS const { ... } = require('pkg')
+  const cjs = masked.match(
+    new RegExp(
+      `(?:const|let|var)\\s*\\{([^}]*)\\}\\s*=\\s*require\\(\\s*['"]${pkg}['"]\\s*\\)`,
+    ),
+  );
+  if (cjs) {
+    const m = cjs[1].match(new RegExp(`\\b${name}\\b(?:\\s*:\\s*(\\w+))?`));
+    if (m) return { code, localName: m[1] || name };
+    return {
+      manual: `已 require ${importPkg} 但未解构 ${name}：请手动加 ${name} 再使用`,
+    };
+  }
+  // 没有绑定：按模块风格插入。module.exports / (无 ESM import 且有 require) → CJS
+  const isCjs =
+    /\bmodule\.exports\b/.test(masked) ||
+    (!/\bimport\b[^\n]*\bfrom\b/.test(masked) && /\brequire\s*\(/.test(masked));
+  const stmt = isCjs
+    ? `const { ${name} } = require('${importPkg}');`
+    : `import { ${name} } from '${importPkg}';`;
+  const lines = code.split('\n');
+  const maskedLines = masked.split('\n');
+  let lastImp = -1;
+  for (let i = 0; i < maskedLines.length; i++) {
+    if (
+      /^\s*import\b/.test(maskedLines[i]) ||
+      /=\s*require\s*\(/.test(maskedLines[i])
+    ) {
+      lastImp = i;
+    }
+  }
+  let at;
+  if (lastImp !== -1) {
+    at = lastImp + 1;
+  } else {
+    at = 0;
+    for (let i = 0; i < maskedLines.length; i++) {
+      const t = maskedLines[i].trim();
+      if (
+        t === '' ||
+        t.startsWith('//') ||
+        t.startsWith('/*') ||
+        t.startsWith('*') ||
+        t.startsWith('#!')
+      ) {
+        at = i + 1;
+        continue;
+      }
+      break;
+    }
+  }
+  lines.splice(at, 0, stmt);
+  const next = lines.join('\n');
+  // 校验确实插入成功
+  const verify = ensureNamedImport(next, importPkg, name);
+  if (verify.localName) return { code: next, localName: name };
+  return {
+    manual: `无法自动插入 ${name} 的 import/require：请手动添加后再使用 ${name}()`,
+  };
 }
 
 // 定位 modern.config 文件

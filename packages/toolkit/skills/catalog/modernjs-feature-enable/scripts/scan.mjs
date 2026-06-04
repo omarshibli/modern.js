@@ -62,9 +62,11 @@ function main() {
     },
     ssg: {
       label: '静态站点生成 SSG',
-      automated: false,
-      enabled: /\bssg\b/.test(maskedCfg),
-      doc: 'references/other-features.md',
+      automated: true,
+      enabled:
+        /\bssgPlugin\s*\(/.test(maskedCfg) &&
+        specs.includes('@modern-js/plugin-ssg'),
+      doc: 'references/enable-ssg.md',
     },
     microFrontend: {
       label: '微前端（Garfish）',

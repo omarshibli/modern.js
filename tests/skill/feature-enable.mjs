@@ -214,6 +214,92 @@ try {
     /bffPlugin\(\)/.test(lk.read('modern.config.ts')),
   );
 
+  // ===== SSG：未启用 → 启用（clean v3 app）=====
+  console.log('== feature-enable ssg (v3-app-no-bff) ==');
+  const s = prepare('v3-app-no-bff');
+  const sScan = execFileSync('node', [path.join(SCRIPTS, 'scan.mjs'), s.work], {
+    encoding: 'utf8',
+  });
+  check('scan: ssg 标为 [自动]', /ssg（.*）：未启用 \[自动\]/.test(sScan));
+  execFileSync('node', [path.join(SCRIPTS, 'enable.mjs'), 'ssg', s.work], {
+    encoding: 'utf8',
+  });
+  const sPkg = JSON.parse(s.read('package.json'));
+  check(
+    '[auto] 新增 @modern-js/plugin-ssg，版本与 app-tools 一致',
+    sPkg.dependencies['@modern-js/plugin-ssg'] ===
+      sPkg.devDependencies['@modern-js/app-tools'],
+  );
+  const sCfg = s.read('modern.config.ts');
+  check(
+    '[auto] plugins 追加 ssgPlugin()',
+    /plugins\s*:\s*\[\s*appTools\(\)\s*,\s*ssgPlugin\(\)\s*\]/.test(sCfg),
+  );
+  check(
+    '[auto] output 合并 ssg: true',
+    /output\s*:\s*\{[^}]*ssg:\s*true/.test(sCfg),
+  );
+  check(
+    '[auto] import ssgPlugin 只 1 处',
+    (sCfg.match(/@modern-js\/plugin-ssg/g) || []).length === 1,
+  );
+
+  // SSG：已有 output 块 → 合并 ssg、保留其它 key
+  console.log('== feature-enable ssg (existing output → merge) ==');
+  const so = prepare('v3-app-ssg-output');
+  execFileSync('node', [path.join(SCRIPTS, 'enable.mjs'), 'ssg', so.work], {
+    encoding: 'utf8',
+  });
+  const soCfg = so.read('modern.config.ts');
+  check(
+    '[auto] 既有 output.polyfill 保留 + 合并 ssg: true',
+    /ssg:\s*true/.test(soCfg) && /polyfill:\s*'usage'/.test(soCfg),
+  );
+
+  // ===== CJS：module.exports/require 配置插 require 绑定（梅长苏 blocker）=====
+  console.log('== feature-enable bff (CJS module.exports config) ==');
+  const cjs = prepare('v3-app-cjs-config');
+  execFileSync('node', [path.join(SCRIPTS, 'enable.mjs'), 'bff', cjs.work], {
+    encoding: 'utf8',
+  });
+  const cjsCfg = cjs.read('modern.config.js');
+  check(
+    '[auto] CJS 配置插入 require 绑定（非 ESM import）',
+    /const\s*\{\s*bffPlugin\s*\}\s*=\s*require\(\s*['"]@modern-js\/plugin-bff['"]\s*\)/.test(
+      cjsCfg,
+    ),
+  );
+  check(
+    '[auto] CJS plugins 追加 bffPlugin()',
+    /plugins\s*:\s*\[[^\]]*bffPlugin\(\)/.test(cjsCfg),
+  );
+  check(
+    '[auto] CJS 未引入 ESM import（保持 module.exports 风格）',
+    !/^import\s/m.test(cjsCfg),
+  );
+  check(
+    '[auto] CJS config report.manual 无「绑定缺失」类残留',
+    !/undefined|未导入/.test(cjs.report().manual.join('\n')),
+  );
+
+  // ===== call 但缺绑定（半启用坏态）→ 补齐绑定、不重复加调用 =====
+  console.log('== feature-enable bff (call without binding → repair) ==');
+  const nb = prepare('v3-app-bff-no-binding');
+  execFileSync('node', [path.join(SCRIPTS, 'enable.mjs'), 'bff', nb.work], {
+    encoding: 'utf8',
+  });
+  const nbCfg = nb.read('modern.config.ts');
+  check(
+    '[repair] 补齐缺失的 bffPlugin import 绑定',
+    /import\s*\{\s*bffPlugin\s*\}\s*from\s*['"]@modern-js\/plugin-bff['"]/.test(
+      nbCfg,
+    ),
+  );
+  check(
+    '[repair] bffPlugin() 调用不重复（仍只 1 处）',
+    (nbCfg.match(/bffPlugin\(\)/g) || []).length === 1,
+  );
+
   console.log(`\n结果：${pass} 通过 / ${fail} 失败`);
   if (fail > 0) process.exit(1);
   console.log('✅ feature-enable skill 验证通过');

@@ -3,19 +3,7 @@
 > 第一版未自动化，依据当前仓库文档给出人工步骤。装官方插件时，**版本一律与 `@modern-js/app-tools` 一致**
 > （官方包统一版本号）。改 `modern.config` 时把插件**追加到顶层 `plugins`**，不要动其它插件顺序。
 
-## 静态站点生成 SSG（`ssg`）
-
-依据 `packages/document/docs/zh/components/enable-ssg.mdx`、`configure/app/output/ssg.mdx`：
-
-1. `pnpm add @modern-js/plugin-ssg@<app-tools 同版本>`
-2. `modern.config`：
-   ```ts
-   import { ssgPlugin } from '@modern-js/plugin-ssg';
-   export default defineConfig({
-     plugins: [appTools(), ssgPlugin()],
-     output: { ssg: true },
-   });
-   ```
+> SSG（`ssg`）已自动化：见 `references/enable-ssg.md` 与 `node scripts/enable.mjs ssg`。
 
 ## 自定义 Web Server（`server`）
 
