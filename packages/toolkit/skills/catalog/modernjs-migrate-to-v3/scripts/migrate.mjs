@@ -215,6 +215,71 @@ function importSpecifiers(code) {
   return specs;
 }
 
+// 与 importSpecifiers 同一套扫描逻辑，但**改写**真实 module specifier：mapper(spec) 返回新 spec
+// 则替换、返回 null 则保留。注释和普通字符串原样保留（不会被全文 split/join 改坏）。
+function mapImportSpecifiers(code, mapper) {
+  let out = '';
+  const n = code.length;
+  let i = 0;
+  let acc = '';
+  let changed = false;
+  while (i < n) {
+    const c = code[i];
+    const c2 = code[i + 1];
+    if (c === '/' && c2 === '/') {
+      let j = i;
+      while (j < n && code[j] !== '\n') j += 1;
+      out += code.slice(i, j);
+      acc = ' ';
+      i = j;
+      continue;
+    }
+    if (c === '/' && c2 === '*') {
+      let j = i + 2;
+      while (j < n && !(code[j] === '*' && code[j + 1] === '/')) j += 1;
+      j = Math.min(j + 2, n);
+      out += code.slice(i, j);
+      acc = ' ';
+      i = j;
+      continue;
+    }
+    if (c === '"' || c === "'" || c === '`') {
+      const quote = c;
+      let j = i + 1;
+      let content = '';
+      while (j < n && code[j] !== quote) {
+        if (code[j] === '\\') {
+          content += code[j] + (code[j + 1] ?? '');
+          j += 2;
+          continue;
+        }
+        content += code[j];
+        j += 1;
+      }
+      const closing = j < n ? quote : '';
+      const isImport =
+        /(?:\bfrom|\bimport|\brequire\s*\(|\bimport\s*\()\s*$/.test(acc);
+      let final = content;
+      if (isImport) {
+        const mapped = mapper(content);
+        if (mapped != null && mapped !== content) {
+          final = mapped;
+          changed = true;
+        }
+      }
+      out += quote + final + closing;
+      i = j + 1;
+      acc = '';
+      continue;
+    }
+    out += c;
+    acc += c;
+    if (acc.length > 32) acc = acc.slice(-32);
+    i += 1;
+  }
+  return { code: out, changed };
+}
+
 // 取对象字面量 `{...}` 的顶层属性片段（忽略嵌套/注释/字符串），用于只识别顶层字段
 function topLevelProps(body) {
   const inner = body.slice(1, -1);
@@ -335,6 +400,9 @@ function migrateDeps(dir, toVersion) {
 }
 
 // ---- 2) import 路径映射 ----
+// 只改**真实 module specifier**（import/export-from/dynamic import/require），注释/普通字符串
+// 里的 @modern-js/runtime/bff|server 原样保留；flags 也只在真 specifier 命中时置位，
+// 避免误补依赖 / 误加 bffPlugin()。
 function migrateImportPaths(files) {
   const map = [
     ['@modern-js/runtime/bff', '@modern-js/plugin-bff/runtime', 'bff'],
@@ -343,15 +411,15 @@ function migrateImportPaths(files) {
   const hit = [];
   const flags = { bff: false, server: false };
   for (const f of files) {
-    let code = readText(f);
-    let c = false;
-    for (const [from, to, flag] of map) {
-      if (code.includes(from)) {
-        code = code.split(from).join(to);
-        c = true;
-        flags[flag] = true;
+    const { code, changed: c } = mapImportSpecifiers(readText(f), spec => {
+      for (const [from, to, flag] of map) {
+        if (spec === from || spec.startsWith(`${from}/`)) {
+          flags[flag] = true;
+          return to + spec.slice(from.length);
+        }
       }
-    }
+      return null;
+    });
     if (c) {
       fs.writeFileSync(f, code);
       hit.push(path.basename(f));
@@ -543,16 +611,19 @@ function migrateConfig(dir) {
   const before = code;
   let hadTailwind = false;
 
+  // 所有结构定位都基于 masked（注释/字符串里的 dev:/server:/applyBaseConfig 不参与），改写落原文同索引
+  const masked = maskCommentsAndStrings(code);
   // applyBaseConfig 包装：dev.port 这类结构性迁移交人工（由 migrateRuntimeBlock 统一记 manual），
-  // 这里只做 tailwind 等安全的文本级移除
-  const wrapped = /\bapplyBaseConfig\s*\(/.test(maskCommentsAndStrings(code));
+  // 这里只做 tailwind 等安全的移除
+  const wrapped = /\bapplyBaseConfig\s*\(/.test(masked);
 
   // dev.port -> server.port：只移动 port，保留 dev 块其余配置；解析不了则进人工清单
-  const devMatch = wrapped ? null : code.match(/\bdev\s*:\s*\{/);
+  const devMatch = wrapped ? null : masked.match(/\bdev\s*:\s*\{/);
   if (devMatch) {
     const block = extractBalanced(
       code,
       devMatch.index + devMatch[0].length - 1,
+      masked,
     );
     if (!block) {
       note(manual, 'dev 块解析失败：dev.port 需人工迁到 server.port');
@@ -571,31 +642,58 @@ function migrateConfig(dir) {
           devReplacement +
           code.slice(block.end);
         if (!devReplacement) code = code.replace(/,(\s*[,)\]\n])/, '$1');
-        const server = code.match(/\bserver\s*:\s*\{/);
+        // 重新 mask 后再定位 server/配置对象（注释里的 server: 不参与）
+        const masked2 = maskCommentsAndStrings(code);
+        const server = masked2.match(/\bserver\s*:\s*\{/);
         if (server) {
           const at = server.index + server[0].length;
           code = `${code.slice(0, at)} port: ${port},${code.slice(at)}`;
+          note(changed, 'dev.port → server.port');
         } else {
-          code = code.replace(
-            /defineConfig\(\s*\{/,
-            `defineConfig({\n  server: { port: ${port} },`,
-          );
+          const os = locateConfigObjStart(code, masked2);
+          if (os !== -1) {
+            code = `${code.slice(0, os + 1)}\n  server: { port: ${port} },${code.slice(os + 1)}`;
+            note(changed, 'dev.port → server.port');
+          } else {
+            note(
+              manual,
+              'dev.port 已识别但无法定位配置对象注入 server：请手动迁到 server.port',
+            );
+          }
         }
-        note(changed, 'dev.port → server.port');
       }
     }
   }
 
-  // 移除 tailwind 插件 import 行 + plugins 数组里的调用
-  if (/plugin-tailwindcss|tailwindcssPlugin/.test(code)) {
+  // 移除 tailwind 插件：真实 import 行 + 真实 plugins 数组里的 tailwindcssPlugin() 调用（不动注释/字符串示例）
+  const maskedTw = maskCommentsAndStrings(code);
+  const hasTwImport = importSpecifiers(code).includes(
+    '@modern-js/plugin-tailwindcss',
+  );
+  if (hasTwImport || /\btailwindcssPlugin\s*\(/.test(maskedTw)) {
     hadTailwind = true;
+    // 1) 移除真实 tailwindcssPlugin() 调用（按 masked 定位，原文同索引删除，从后往前）
+    const reTw = /tailwindcssPlugin\s*\(\s*\)\s*,?/g;
+    const ranges = [];
+    let mm = reTw.exec(maskedTw);
+    while (mm !== null) {
+      ranges.push([mm.index, mm.index + mm[0].length]);
+      mm = reTw.exec(maskedTw);
+    }
+    for (let k = ranges.length - 1; k >= 0; k -= 1) {
+      code = code.slice(0, ranges[k][0]) + code.slice(ranges[k][1]);
+    }
+    // 2) 移除真实的 @modern-js/plugin-tailwindcss import 行（import 路径是字符串，用 maskComments
+    //    只去注释、保留字符串；注释行被 mask 掉则不匹配、保持原样）
     code = code
       .split('\n')
       .filter(
-        line => !/from\s+['"]@modern-js\/plugin-tailwindcss['"]/.test(line),
+        line =>
+          !/from\s+['"]@modern-js\/plugin-tailwindcss['"]/.test(
+            maskComments(line),
+          ),
       )
       .join('\n');
-    code = code.replace(/tailwindcssPlugin\(\s*\)\s*,?/g, '');
   }
 
   if (code !== before) {

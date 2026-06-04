@@ -785,6 +785,52 @@ try {
     ),
   );
 
+  // C22. blocker：已确认 v2 项目里，注释/普通字符串提到 runtime/bff|server 不被改写、不补依赖/插件
+  console.log(
+    '== C22. v2-edge-import-in-text (bff in comment/string ≠ import) ==',
+  );
+  const it = prepare('v2-edge-import-in-text');
+  const itNotes = it.read('src/notes.ts');
+  check(
+    'notes.ts 里的 @modern-js/runtime/bff|server 原样保留（未被改写）',
+    itNotes.includes('@modern-js/runtime/bff') &&
+      itNotes.includes('@modern-js/runtime/server') &&
+      !itNotes.includes('@modern-js/plugin-bff/runtime'),
+  );
+  const itPkg = JSON.parse(it.read('package.json'));
+  check(
+    '未误补 plugin-bff / server-runtime 依赖',
+    !{ ...itPkg.dependencies, ...itPkg.devDependencies }[
+      '@modern-js/plugin-bff'
+    ] &&
+      !{ ...itPkg.dependencies, ...itPkg.devDependencies }[
+        '@modern-js/server-runtime'
+      ],
+  );
+  check('未误加 bffPlugin()', !/bffPlugin/.test(it.read('modern.config.ts')));
+
+  // C23. blocker：注释里的 dev: { port } 不参与定位，不破坏真实 config；真实 dev.port 仍正常迁移
+  console.log('== C23. v2-edge-dev-in-comment (comment dev ≠ real dev) ==');
+  const dc2 = prepare('v2-edge-dev-in-comment');
+  const dc2Cfg = dc2.read('modern.config.ts');
+  check(
+    '真实 defineConfig 未被破坏（仍含 export default defineConfig + appTools()）',
+    /export default defineConfig\(\{[\s\S]*appTools\(\)/.test(dc2Cfg),
+  );
+  check(
+    '真实 dev.port → server.port (8080)',
+    /server\s*:\s*\{[^}]*port\s*:\s*8080/.test(dc2Cfg),
+  );
+  check(
+    '注释里的 dev: { port: 7777 } 原样保留',
+    dc2Cfg.includes('dev: { port: 7777 }'),
+  );
+  check(
+    'runtime 仍正常合并进 modern.runtime.ts',
+    dc2.has('src/modern.runtime.ts') &&
+      /router:\s*true/.test(dc2.read('src/modern.runtime.ts')),
+  );
+
   console.log(`\n结果：${pass} 通过 / ${fail} 失败`);
   if (fail > 0) process.exit(1);
   console.log('✅ migrate-to-v3 skill 迁移验证通过');
