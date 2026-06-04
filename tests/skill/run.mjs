@@ -70,6 +70,30 @@ function prepare(fixture, runMigrate = true) {
 }
 
 try {
+  // A0. 未显式传 --to 时，默认解析 Modern.js 最新 v3 版本；测试里用 env 注入，避免依赖网络。
+  console.log('== A0. default target version resolves latest v3 ==');
+  const latest = prepare('real-v2-generator-app', false);
+  execFileSync('node', [path.join(SCRIPTS, 'migrate.mjs'), latest.work], {
+    encoding: 'utf8',
+    env: {
+      ...process.env,
+      MODERNJS_MIGRATE_LATEST_V3_VERSION: '3.9.9',
+    },
+  });
+  const latestPkg = JSON.parse(latest.read('package.json'));
+  const latestReport = latest.report();
+  check(
+    '[auto] 默认目标版本不再固定 3.0.0，会使用检测到的最新 v3',
+    latestPkg.devDependencies['@modern-js/app-tools'] === '3.9.9' &&
+      latestPkg.dependencies['@modern-js/runtime'] === '3.9.9',
+  );
+  check(
+    '[auto] report 记录目标版本来源',
+    latestReport.toVersion === '3.9.9' &&
+      latestReport.targetVersionSource ===
+        'env:MODERNJS_MIGRATE_LATEST_V3_VERSION',
+  );
+
   // ============================================================
   // A. 真实自动迁移 baseline：real-v2-generator-app（generator 默认 defineConfig）
   //    来源：origin/v2 MWA generator 模板。验证 v2→v3 自动迁移主路径。

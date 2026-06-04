@@ -15,6 +15,7 @@
 //   server.ssr.mode、webpack 自定义配置、modernConfig.runtime、非空/函数式 runtime、
 //   applyBaseConfig(...) 包装下的结构性迁移（integration helper，标注「结构迁移未完成」）。
 
+import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 
@@ -34,6 +35,92 @@ const note = (list, msg) => list.push(msg);
 
 const readText = f => fs.readFileSync(f, 'utf8');
 const exists = (...p) => fs.existsSync(path.join(...p));
+
+function parseVersion(v) {
+  const m = String(v ?? '').match(/(\d+)\.(\d+)\.(\d+)(?:-[0-9A-Za-z.-]+)?/);
+  if (!m) return null;
+  return {
+    raw: m[0],
+    major: Number(m[1]),
+    minor: Number(m[2]),
+    patch: Number(m[3]),
+    prerelease: m[0].includes('-'),
+  };
+}
+
+function compareVersions(a, b) {
+  return a.major - b.major || a.minor - b.minor || a.patch - b.patch;
+}
+
+function resolveLatestV3Version() {
+  const envVersion = process.env.MODERNJS_MIGRATE_LATEST_V3_VERSION;
+  if (envVersion) {
+    const parsed = parseVersion(envVersion);
+    if (parsed?.major === 3 && !parsed.prerelease) {
+      return {
+        version: parsed.raw,
+        source: 'env:MODERNJS_MIGRATE_LATEST_V3_VERSION',
+      };
+    }
+    throw new Error(
+      `MODERNJS_MIGRATE_LATEST_V3_VERSION 必须是稳定 v3 版本，当前为：${envVersion}`,
+    );
+  }
+
+  let stdout;
+  try {
+    stdout = execFileSync(
+      'npm',
+      ['view', '@modern-js/app-tools@3', 'version', '--json'],
+      {
+        encoding: 'utf8',
+        stdio: ['ignore', 'pipe', 'pipe'],
+        timeout: 30000,
+      },
+    );
+  } catch (err) {
+    const detail = err instanceof Error ? err.message : String(err);
+    throw new Error(
+      [
+        '无法检测 @modern-js/app-tools 最新 v3 版本。',
+        '请确认当前环境可访问 npm registry，或显式传入 --to=<最新 v3 版本>。',
+        `原始错误：${detail}`,
+      ].join('\n'),
+    );
+  }
+
+  let data;
+  try {
+    data = JSON.parse(stdout);
+  } catch {
+    data = stdout.trim();
+  }
+  const versions = (Array.isArray(data) ? data : [data])
+    .map(parseVersion)
+    .filter(v => v?.major === 3 && !v.prerelease)
+    .sort(compareVersions);
+  const latest = versions.at(-1);
+  if (!latest) {
+    throw new Error(
+      'npm registry 未返回 @modern-js/app-tools 的稳定 v3 版本，请显式传入 --to=<最新 v3 版本>。',
+    );
+  }
+  return { version: latest.raw, source: 'npm:@modern-js/app-tools@3' };
+}
+
+function resolveTargetVersion(args) {
+  const toArg = args.find(a => a.startsWith('--to='));
+  if (toArg) {
+    const parsed = parseVersion(toArg.split('=')[1]);
+    if (!parsed?.raw || parsed.major !== 3) {
+      throw new Error(
+        `--to 必须是有效 v3 版本号，当前为：${toArg.split('=')[1]}`,
+      );
+    }
+    return { version: parsed.raw, source: 'explicit' };
+  }
+  return resolveLatestV3Version();
+}
 
 // monorepo / 非语义化版本协议：随 monorepo 整体升级解析，不该被改写成固定版本号
 const WORKSPACE_PROTO = /^(workspace:|link:|catalog:|file:|portal:|npm:|\*$)/;
@@ -1274,8 +1361,14 @@ function hasUnsafeTailwindUsage(dir) {
 function main() {
   const args = process.argv.slice(2);
   const dir = path.resolve(args.find(a => !a.startsWith('--')) || '.');
-  const toArg = args.find(a => a.startsWith('--to='));
-  const toVersion = toArg ? toArg.split('=')[1] : '3.0.0';
+  let target;
+  try {
+    target = resolveTargetVersion(args);
+  } catch (err) {
+    console.error(err instanceof Error ? err.message : String(err));
+    process.exit(1);
+  }
+  const toVersion = target.version;
   const json = args.includes('--json');
 
   if (!exists(dir, 'package.json')) {
@@ -1334,7 +1427,13 @@ function main() {
   writePostcss(dir, hadTailwind);
   flagManual(dir, reactMajor);
 
-  const report = { projectDir: dir, toVersion, changed, manual };
+  const report = {
+    projectDir: dir,
+    toVersion,
+    targetVersionSource: target.source,
+    changed,
+    manual,
+  };
   const outDir = path.join(dir, '.agents', 'runs', 'modernjs-migrate');
   fs.mkdirSync(outDir, { recursive: true });
   fs.writeFileSync(
@@ -1347,6 +1446,7 @@ function main() {
     return;
   }
   console.log(`🚚 Modern.js v2→v3 自动迁移：${dir}`);
+  console.log(`目标版本：${toVersion}（${target.source}）`);
   console.log(`\n✅ 已自动改写 ${changed.length} 项：`);
   for (const c of changed) console.log(`  - ${c}`);
   console.log(`\n🔴 人工清单 ${manual.length} 项：`);

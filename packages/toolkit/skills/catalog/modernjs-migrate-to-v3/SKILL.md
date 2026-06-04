@@ -41,13 +41,14 @@ node scripts/scan-project.mjs <projectDir>
 ### 步骤 2：执行可安全自动化的改写
 
 ```bash
-node scripts/migrate.mjs <projectDir> --to=<目标版本>
+node scripts/migrate.mjs <projectDir>
 ```
 
 自动完成（依据 `guides/upgrade/*`）：
 
 - **前置自保护**：`workspace`/`link`/`catalog` 协议 + 无任何 v2-only 信号 → 直接中止（exit 1，不改任何文件），不依赖 scan
-- **依赖**：固定版本（`^2.x`）的 `@modern-js/*` 升到目标版本；**`workspace`/`link`/`catalog` 协议依赖保留不改**（随 monorepo 整体升级，进人工清单）；移除 `@modern-js/plugin-tailwindcss`
+- **目标版本**：未传 `--to` 时会通过 npm 检测 `@modern-js/app-tools@3` 的最新稳定 v3 版本作为目标版本；只有需要锁定版本时才显式传 `--to=<version>`。如果当前环境无法访问 npm registry，脚本会中止并提示显式传入目标版本，**不会回退到 `3.0.0`**。
+- **依赖**：固定版本（`^2.x`）的 `@modern-js/*` 升到检测到的最新 v3 目标版本；**`workspace`/`link`/`catalog` 协议依赖保留不改**（随 monorepo 整体升级，进人工清单）；移除 `@modern-js/plugin-tailwindcss`
 - **配置入口形态**：`defineConfig({})` / `defineConfig<'rspack'>({})` / `export default {}` / `module.exports = {}`（JS 静态配置）均按主路径处理；函数式/动态 `defineConfig(() => ({}))` 含 runtime 时进人工清单
 - **import 路径**：`@modern-js/runtime/bff`→`@modern-js/plugin-bff/runtime`、`@modern-js/runtime/server`→`@modern-js/server-runtime`，并**补充对应依赖**（`@modern-js/plugin-bff` / `@modern-js/server-runtime`；版本协议：普通 semver 用目标版本；`workspace:` / `catalog:`（名称无关）沿用现有 `app-tools`/`runtime` 的 spec；`link:` / `file:` / `portal:` / `npm:`（指向具体包路径/别名）**不照搬**、进人工清单）；命中 BFF 时给 `modern.config` 顶层 plugins **末尾追加** `bffPlugin()`（保持 `[appTools(), bffPlugin()]` 顺序；必要时在 `@modern-js/app-tools` import 上补 `appTools`；无法补则进人工清单，不写半成品）
 - **健壮性（注释/字符串）**：import 的**检测与改写共用同一套真实 specifier 扫描器**（`eachModuleSpecifier`，覆盖 `import`/`export-from`/side-effect import/`import()`/`require()`，含 `import(/* magic */ '...')` 这类带注释的动态 import）；`dev`/`server` 只在**配置对象顶层**迁移（嵌套 `tools.dev.port` 不动）；tailwind 仅删真实 import 行与真实 `tailwindcssPlugin()` 调用（按真实 specifier offset，不伤普通字符串/注释示例，移除后清理悬挂逗号）；注释/普通字符串里的 `defineConfig`/`runtime`/`appTools({ bundler })`/`applyBaseConfig`/`dev: { port }`/`@modern-js/runtime/bff|server` 都不会被误当真实配置、v2 信号或 import；需要字符串「值」的判断（如 `ssr.mode`）才保留字符串
