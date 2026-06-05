@@ -4,7 +4,7 @@
 //
 // 自动改写（依据 guides/upgrade/*）：
 //   - 依赖：@modern-js/* 统一升到目标版本；移除 @modern-js/plugin-tailwindcss
-//   - import 路径：runtime/bff→plugin-bff/runtime、runtime/server→server-runtime
+//   - import 路径：runtime/bff→plugin-bff/client、runtime/server→server-runtime
 //   - 配置：appTools({ bundler })→appTools()；顶层 runtime 块→合并进空的 src/modern.runtime.ts；
 //           dev.port→server.port；移除 tailwind 插件 import/调用 + 写 postcss.config.cjs
 //   - 入口：src/index.* → src/entry.*（bootstrap 函数改写为 createRoot/render）
@@ -552,6 +552,7 @@ function migrateDeps(dir, toVersion, opts = {}) {
   const pkg = JSON.parse(readText(file));
   let bumped = false;
   let tailwindRemoved = false;
+  let serverPluginRemoved = false;
   const skippedWorkspace = new Set();
   for (const field of ['dependencies', 'devDependencies', 'peerDependencies']) {
     const deps = pkg[field];
@@ -559,6 +560,11 @@ function migrateDeps(dir, toVersion, opts = {}) {
     if (deps['@modern-js/plugin-tailwindcss'] && !opts.keepTailwindDep) {
       delete deps['@modern-js/plugin-tailwindcss'];
       tailwindRemoved = true;
+    }
+    // v3 不再有独立的 @modern-js/plugin-server（自定义 server 内置于 server-runtime）
+    if (deps['@modern-js/plugin-server']) {
+      delete deps['@modern-js/plugin-server'];
+      serverPluginRemoved = true;
     }
     for (const name of Object.keys(deps)) {
       if (!name.startsWith('@modern-js/')) continue;
@@ -575,11 +581,13 @@ function migrateDeps(dir, toVersion, opts = {}) {
       }
     }
   }
-  if (bumped || tailwindRemoved) {
+  if (bumped || tailwindRemoved || serverPluginRemoved) {
     fs.writeFileSync(file, `${JSON.stringify(pkg, null, 2)}\n`);
     const parts = [];
     if (bumped) parts.push(`@modern-js/* 升到 ${toVersion}`);
     if (tailwindRemoved) parts.push('移除 @modern-js/plugin-tailwindcss');
+    if (serverPluginRemoved)
+      parts.push('移除 @modern-js/plugin-server（v3 内置）');
     note(changed, `依赖：${parts.join('，')}`);
   }
   if (skippedWorkspace.size) {
@@ -615,7 +623,8 @@ function removeRemovedModernScripts(dir) {
 // 避免误补依赖 / 误加 bffPlugin()。
 function migrateImportPaths(files) {
   const map = [
-    ['@modern-js/runtime/bff', '@modern-js/plugin-bff/runtime', 'bff'],
+    // v3 @modern-js/plugin-bff exports 仅 ./cli ./server ./server-plugin ./client（无 ./runtime）
+    ['@modern-js/runtime/bff', '@modern-js/plugin-bff/client', 'bff'],
     ['@modern-js/runtime/server', '@modern-js/server-runtime', 'server'],
   ];
   const hit = [];
@@ -973,6 +982,267 @@ function migrateConfig(dir) {
   return hadTailwind;
 }
 
+// ---- 3b) v3 配置项改名（依据 guides/upgrade/config.mdx）----
+// 拆顶层属性 `key: value` → { key, val }（key 去引号；基于 masked 定位冒号）。函数式简写（无顶层冒号）返回 null。
+function splitProp(prop) {
+  const m = maskCommentsAndStrings(prop);
+  const ci = m.indexOf(':');
+  if (ci === -1) return null;
+  // 冒号若在括号/方括号内（如方法简写 `foo(a): b` 不会发生，但防御）则视为非简单属性
+  const key = prop
+    .slice(0, ci)
+    .trim()
+    .replace(/^['"]|['"]$/g, '');
+  return { key, val: prop.slice(ci + 1).trim() };
+}
+function negateBoolLiteral(val) {
+  const v = val.trim();
+  if (/^true$/.test(v)) return 'false';
+  if (/^false$/.test(v)) return 'true';
+  return null; // 非布尔字面量 → 调用方走 manual
+}
+// 结构化转换某个**顶层块**（如 output/source/html/tools）的属性：mapper(prop)→ string(替换) | null(删除) | undefined(保留原样)。
+// 整块属性清空时连块一起删除并吞掉紧邻逗号。基于 masked 定位，注释/字符串/嵌套不参与。
+function transformConfigBlock(code, blockKey, mapper) {
+  const masked = maskCommentsAndStrings(code);
+  const objStart = locateConfigObjStart(code, masked);
+  if (objStart === -1) return code;
+  const obj = extractBalanced(code, objStart, masked);
+  if (!obj) return code;
+  const blk = findTopLevelKey(masked, objStart, obj.end, blockKey);
+  if (!blk) return code;
+  const block = extractBalanced(code, blk.brace, masked);
+  if (!block) return code;
+  const props = topLevelProps(block.body);
+  const out = [];
+  for (const p of props) {
+    const r = mapper(p);
+    if (r === null) continue;
+    out.push(r === undefined ? p : r);
+  }
+  const rebuilt = out.length ? `${blockKey}: { ${out.join(', ')} }` : '';
+  let s = blk.keyStart;
+  let e = block.end;
+  if (!rebuilt) {
+    const dm = maskCommentsAndStrings(code);
+    let k = e;
+    while (k < dm.length && /[ \t]/.test(dm[k])) k += 1;
+    if (dm[k] === ',') {
+      e = k + 1;
+    } else {
+      let q = s - 1;
+      while (q >= 0 && /\s/.test(dm[q])) q -= 1;
+      if (dm[q] === ',') s = q;
+    }
+  }
+  return code.slice(0, s) + rebuilt + code.slice(e);
+}
+
+// 移除顶层 plugins 数组里的某个插件调用（如 serverPlugin()）+ 其 static import；按 masked 真实位置改写。
+function removeNamedPluginAndImport(input, callName, pkg) {
+  let code = input;
+  let masked = maskCommentsAndStrings(code);
+  // 1) 删调用 `callName()`（吞紧邻逗号，优先后、否则前）
+  const reCall = new RegExp(`\\b${callName}\\s*\\(\\s*\\)`, 'g');
+  const ranges = [];
+  let m = reCall.exec(masked);
+  while (m !== null) {
+    let s = m.index;
+    let e = m.index + m[0].length;
+    let k = e;
+    while (k < masked.length && /[ \t]/.test(masked[k])) k += 1;
+    if (masked[k] === ',') {
+      e = k + 1;
+      while (e < masked.length && /[ \t]/.test(masked[e])) e += 1;
+    } else {
+      let p = s - 1;
+      while (p >= 0 && /\s/.test(masked[p])) p -= 1;
+      if (masked[p] === ',') s = p;
+    }
+    ranges.push([s, e]);
+    m = reCall.exec(masked);
+  }
+  for (let i = ranges.length - 1; i >= 0; i -= 1) {
+    code = code.slice(0, ranges[i][0]) + code.slice(ranges[i][1]);
+  }
+  // 2) 删该 pkg 的 static import 整条声明
+  masked = maskCommentsAndStrings(code);
+  const stmt = [];
+  eachModuleSpecifier(code, ({ content, open, close, kind }) => {
+    if (content !== pkg || kind !== 'static') return;
+    let start = -1;
+    const re = /\b(?:import|export)\b/g;
+    let km = re.exec(masked);
+    while (km !== null) {
+      if (km.index >= open) break;
+      start = km.index;
+      km = re.exec(masked);
+    }
+    if (start === -1) return;
+    while (start > 0 && (code[start - 1] === ' ' || code[start - 1] === '\t')) {
+      start -= 1;
+    }
+    let end = close + 1;
+    while (end < code.length && /[ \t]/.test(code[end])) end += 1;
+    if (code[end] === ';') end += 1;
+    if (code[end] === '\r') end += 1;
+    if (code[end] === '\n') end += 1;
+    stmt.push([start, end]);
+  });
+  stmt.sort((a, b) => b[0] - a[0]);
+  for (const [s, e] of stmt) code = code.slice(0, s) + code.slice(e);
+  return code;
+}
+
+function migrateV3ConfigKeys(dir) {
+  const configFile = [
+    'modern.config.ts',
+    'modern.config.js',
+    'modern.config.mjs',
+  ].find(f => exists(dir, f));
+  if (!configFile) return;
+  const file = path.join(dir, configFile);
+  let code = readText(file);
+  const before = code;
+
+  // output：字段改名（依据 config.mdx）。负向布尔需取反；非布尔字面量进 manual 不乱改。
+  const negKeys = {
+    disableFilenameHash: 'filenameHash',
+    disableMinimize: 'minify',
+    disableSourceMap: 'sourceMap',
+  };
+  const directKeys = {
+    disableCssExtract: 'injectStyles',
+    enableInlineScripts: 'inlineScripts',
+    enableInlineStyles: 'inlineStyles',
+  };
+  code = transformConfigBlock(code, 'output', prop => {
+    const sp = splitProp(prop);
+    if (!sp) return undefined;
+    if (sp.key === 'cssModuleLocalIdentName') {
+      return `cssModules: { localIdentName: ${sp.val} }`;
+    }
+    if (directKeys[sp.key]) return `${directKeys[sp.key]}: ${sp.val}`;
+    if (negKeys[sp.key]) {
+      const n = negateBoolLiteral(sp.val);
+      if (n === null) {
+        note(
+          manual,
+          `output.${sp.key} 值非布尔字面量：请手动改为 output.${negKeys[sp.key]}（取反）`,
+        );
+        return undefined;
+      }
+      return `${negKeys[sp.key]}: ${n}`;
+    }
+    if (sp.key === 'enableLatestDecorators') {
+      if (/^false$/.test(sp.val.trim())) return null; // 默认值，直接移除
+      note(
+        manual,
+        'output.enableLatestDecorators=true → 改用 source.decorators: { version: "2022-03" }（见 config.mdx）',
+      );
+      return null;
+    }
+    return undefined;
+  });
+
+  // source：废弃字段。直接移除类；语义迁移类（resolve*）移除并记 manual。
+  code = transformConfigBlock(code, 'source', prop => {
+    const sp = splitProp(prop);
+    if (!sp) return undefined;
+    if (
+      ['moduleScopes', 'enableCustomEntry', 'disableEntryDirs'].includes(sp.key)
+    ) {
+      return null;
+    }
+    if (sp.key === 'resolveMainFields') {
+      note(
+        manual,
+        'source.resolveMainFields 已废弃 → 改用 resolve.mainFields（见 config.mdx）',
+      );
+      return null;
+    }
+    if (sp.key === 'resolveExtensionPrefix') {
+      note(
+        manual,
+        'source.resolveExtensionPrefix 已废弃 → 改用 resolve.extensions（语义不同，请人工确认，见 config.mdx）',
+      );
+      return null;
+    }
+    return undefined;
+  });
+
+  // html：appIcon 字符串→对象；disableHtmlFolder→outputStructure；xxxByEntries→函数（复杂，记 manual）
+  code = transformConfigBlock(code, 'html', prop => {
+    const sp = splitProp(prop);
+    if (!sp) return undefined;
+    if (sp.key === 'appIcon' && /^['"`]/.test(sp.val.trim())) {
+      return `appIcon: { icons: [{ src: ${sp.val.trim()}, size: 180 }] }`;
+    }
+    if (sp.key === 'disableHtmlFolder') {
+      const v = sp.val.trim();
+      if (/^true$/.test(v)) return `outputStructure: 'flat'`;
+      if (/^false$/.test(v)) return `outputStructure: 'nested'`;
+      note(
+        manual,
+        'html.disableHtmlFolder 值非布尔字面量 → 请手动改为 html.outputStructure',
+      );
+      return undefined;
+    }
+    if (/ByEntries$/.test(sp.key) || /ByEnties$/.test(sp.key)) {
+      note(
+        manual,
+        `html.${sp.key} 已废弃 → 改用 html.${sp.key.replace(/By(Entries|Enties)$/, '')}({ entryName }) 函数语法（见 config.mdx）`,
+      );
+      return null;
+    }
+    return undefined;
+  });
+
+  // tools：webpack→rspack、webpackChain→bundlerChain（方法简写，改首个标识符）；devServer 拆分记 manual
+  code = transformConfigBlock(code, 'tools', prop => {
+    const mt = maskCommentsAndStrings(prop).trimStart();
+    if (/^webpackChain\b/.test(mt)) {
+      return prop.replace(/^(\s*)webpackChain/, '$1bundlerChain');
+    }
+    if (/^webpack\b/.test(mt)) {
+      return prop.replace(/^(\s*)webpack/, '$1rspack');
+    }
+    if (/^devServer\b/.test(mt)) {
+      note(
+        manual,
+        'tools.devServer 已废弃 → client/hot/compress/headers/historyApiFallback/devMiddleware 等需拆到 dev.* / dev.server.*（见 config.mdx）',
+      );
+      return null;
+    }
+    return undefined;
+  });
+
+  // 移除 v3 已废的 serverPlugin() 调用 + @modern-js/plugin-server import
+  const maskedAll = maskCommentsAndStrings(code);
+  if (
+    /\bserverPlugin\s*\(/.test(maskedAll) ||
+    importSpecifiers(code).includes('@modern-js/plugin-server')
+  ) {
+    code = removeNamedPluginAndImport(
+      code,
+      'serverPlugin',
+      '@modern-js/plugin-server',
+    );
+    note(
+      changed,
+      `配置 ${configFile}：移除 v3 已废的 serverPlugin()（自定义 server 改用 server/modern.server.ts）`,
+    );
+  }
+
+  if (code !== before) {
+    fs.writeFileSync(file, code);
+    note(
+      changed,
+      `配置 ${configFile}：v3 配置项改名（output/source/html/tools，见 config.mdx）`,
+    );
+  }
+}
+
 // 从 `appTools(...)` 调用里**只删 bundler 参数**（v3 默认 Rspack，不再接受 bundler），
 // 保留其它选项与别的 plugin 参数；返回 {code, changed}
 function stripAppToolsBundler(code) {
@@ -1132,6 +1402,76 @@ function migrateRuntimeBlock(dir) {
   );
 }
 
+// 把 v2 自定义入口 bootstrap（箭头 `(App, bootstrap) => {}` 或函数声明
+// `export default [async] function name(App, bootstrap) {}`）改写为 v3 的 createRoot()/render()。
+// 用括号/花括号配平解析，能处理带类型注解（含 `() => void` 这种内含 `)` 的参数）。
+// 返回新文件内容，或 null（不是可识别的 bootstrap 入口）。
+function rewriteBootstrapEntry(code) {
+  const masked = maskCommentsAndStrings(code);
+  const sig = masked.match(
+    /export\s+default\s+(?:async\s+)?(?:function\s+\w+\s*)?\(/,
+  );
+  if (!sig) return null;
+  const parenOpen = sig.index + sig[0].length - 1;
+  let d = 0;
+  let parenClose = -1;
+  for (let i = parenOpen; i < masked.length; i += 1) {
+    if (masked[i] === '(') d += 1;
+    else if (masked[i] === ')') {
+      d -= 1;
+      if (d === 0) {
+        parenClose = i;
+        break;
+      }
+    }
+  }
+  if (parenClose === -1) return null;
+  const params = code.slice(parenOpen + 1, parenClose);
+  let j = parenClose + 1;
+  while (j < masked.length && /\s/.test(masked[j])) j += 1;
+  if (masked.slice(j, j + 2) === '=>') {
+    j += 2;
+    while (j < masked.length && /\s/.test(masked[j])) j += 1;
+  }
+  if (masked[j] !== '{') return null; // 非块体（箭头返回表达式等）
+  const bodyOpen = j;
+  let bd = 0;
+  let bodyClose = -1;
+  for (let i = bodyOpen; i < masked.length; i += 1) {
+    if (masked[i] === '{') bd += 1;
+    else if (masked[i] === '}') {
+      bd -= 1;
+      if (bd === 0) {
+        bodyClose = i;
+        break;
+      }
+    }
+  }
+  if (bodyClose === -1) return null;
+  // 第二个顶层参数名即 bootstrap 回调（复用 topLevelProps 切顶层逗号，处理泛型/箭头类型）
+  const paramParts = topLevelProps(`{${params}}`);
+  if (paramParts.length < 2) return null;
+  const bootstrapName = (paramParts[1].match(/^\s*(\w+)/) || [])[1];
+  if (!bootstrapName) return null;
+  const body = code
+    .slice(bodyOpen + 1, bodyClose)
+    .replace(
+      new RegExp(`\\b${bootstrapName}\\s*\\(\\s*\\)`, 'g'),
+      'render(<ModernRoot />)',
+    );
+  return [
+    `import { createRoot } from '@modern-js/runtime/react';`,
+    `import { render } from '@modern-js/runtime/browser';`,
+    '',
+    `const ModernRoot = createRoot();`,
+    '',
+    `async function beforeRender() {${body}}`,
+    '',
+    `beforeRender();`,
+    '',
+  ].join('\n');
+}
+
 // ---- 4) 入口：index→entry（含 bootstrap 改写）、App.config 抽取 ----
 function flagRoutesLayoutConfigInit(src) {
   const layout = ['routes/layout.tsx', 'routes/layout.jsx']
@@ -1168,28 +1508,21 @@ function migrateEntry(dir, entryType) {
     const idx = path.join(src, `index.${ext}`);
     if (fs.existsSync(idx)) {
       let code = readText(idx);
-      // bootstrap 函数：export default (App, bootstrap) => { ... }
-      const m = code.match(
-        /export\s+default\s*(?:async\s*)?\(\s*\w+[^)]*,\s*(\w+)[^)]*\)\s*=>\s*\{([\s\S]*)\}\s*;?\s*$/,
-      );
-      if (m) {
-        const bootstrapName = m[1];
-        const body = m[2].replace(
-          new RegExp(`\\b${bootstrapName}\\s*\\(\\s*\\)`, 'g'),
-          'render(<ModernRoot />)',
-        );
-        code = [
-          `import { createRoot } from '@modern-js/runtime/react';`,
-          `import { render } from '@modern-js/runtime/browser';`,
-          '',
-          `const ModernRoot = createRoot();`,
-          '',
-          `async function beforeRender() {${body}}`,
-          '',
-          `beforeRender();`,
-          '',
-        ].join('\n');
+      // bootstrap 入口：箭头 或 函数声明形态都改写为 createRoot()/render()
+      const rewritten = rewriteBootstrapEntry(code);
+      if (rewritten) {
+        code = rewritten;
         note(changed, 'bootstrap 入口改写为 createRoot()/render()');
+      } else if (
+        /export\s+default\s+(?:async\s+)?(?:function|\()/.test(
+          maskCommentsAndStrings(code),
+        )
+      ) {
+        // 是默认导出函数/箭头但无法识别为标准 bootstrap：不假装成功，进 manual
+        note(
+          manual,
+          `src/index.${ext} 是自定义入口但 bootstrap 形态无法自动改写：请手动改为 createRoot()/render()（见 references/migrate-entry.md、guides/upgrade/entry）`,
+        );
       }
       const entry = path.join(src, `entry.${ext}`);
       fs.writeFileSync(entry, code);
@@ -1487,9 +1820,64 @@ function migratePagesToRoutes(dir) {
         `仍有 pages 引用需人工核对（别名/非相对路径）：${residual.join(', ')}`,
       );
     }
+    // v3 约定式路由需要根 layout（缺失会报 "The root layout component is required"）；语义确定，自动补最小 Outlet 布局
+    if (!firstExistingFile(routesDir, 'layout')) {
+      const pageFile = firstExistingFile(routesDir, 'page');
+      const lext = pageFile?.endsWith('.jsx') ? 'jsx' : 'tsx';
+      fs.writeFileSync(
+        path.join(routesDir, `layout.${lext}`),
+        `import { Outlet } from '@modern-js/runtime/router';\n\nexport default function Layout() {\n  return <Outlet />;\n}\n`,
+      );
+      note(
+        changed,
+        `生成最小 src/routes/layout.${lext}（v3 约定式路由需根布局）`,
+      );
+    }
   } else if (exists(src, 'pages')) {
     note(manual, 'src/pages 与 src/routes 并存：需人工合并');
   }
+}
+
+// ---- 6b) 自定义 Web Server：server/index.* → server/modern.server.*（生成可构建骨架）----
+// v3 约定式自定义 server 是 server/modern.server.ts 的 defineServerConfig。v2 的 unstableMiddleware/
+// afterRender 用 Modern.js Server Context，语义到 Hono Context 的转换需人工（见 web-server 文档）。
+// 这里生成**可 build**的空 defineServerConfig 骨架，并把原逻辑作为注释保留 + 进 manual 提示补语义。
+function migrateCustomServer(dir) {
+  const serverFile = ['server/index.ts', 'server/index.js']
+    .map(f => path.join(dir, f))
+    .find(fs.existsSync);
+  if (!serverFile) return;
+  const old = readText(serverFile);
+  const masked = maskCommentsAndStrings(old);
+  if (!/\b(unstableMiddleware|afterRender|hook)\b/.test(masked)) return;
+  const ext = serverFile.endsWith('.js') ? 'js' : 'ts';
+  const target = path.join(dir, 'server', `modern.server.${ext}`);
+  if (fs.existsSync(target)) return; // 已有 modern.server.*，不覆盖
+  const ref = old.replace(/\*\//g, '* /'); // 避免注释块提前闭合
+  const content = [
+    `import { defineServerConfig } from '@modern-js/server-runtime';`,
+    '',
+    `// TODO(v3 迁移)：原 server/index.${ext} 的 v2 自定义 server 逻辑需按 guides/upgrade/web-server 手动迁移：`,
+    '//  - unstableMiddleware[] → defineServerConfig({ middlewares: [{ name, handler }] })，handler 必须 await next()',
+    '//  - afterRender hook → renderMiddlewares；Context API：Modern.js Server Context → Hono Context（c.req / c.res）',
+    `// 补全后删除下方原始逻辑参考。原 server/index.${ext}：`,
+    '/*',
+    ref,
+    '*/',
+    '',
+    'export default defineServerConfig({});',
+    '',
+  ].join('\n');
+  fs.writeFileSync(target, content);
+  fs.rmSync(serverFile);
+  note(
+    changed,
+    `server/index.${ext} → server/modern.server.${ext}（生成可构建骨架，原逻辑作为注释保留）`,
+  );
+  note(
+    manual,
+    `自定义 Web Server 语义需人工补全：server/modern.server.${ext} 现为空 defineServerConfig（可 build），unstableMiddleware/afterRender 的 Hono Context 迁移见 references/migrate-custom-server.md`,
+  );
 }
 
 // ---- 7) tailwind postcss ----
@@ -1699,6 +2087,7 @@ function main() {
   const importFlags = migrateImportPaths(files);
   ensureMappedDeps(dir, toVersion, importFlags);
   const hadTailwind = migrateConfig(dir);
+  migrateV3ConfigKeys(dir);
   // runtime 块 → modern.runtime.ts、appTools({ bundler }) → appTools()（applyBaseConfig 走 manual）
   // 须在 migrateEntry 之前：若它新建/填充了 modern.runtime.ts，App.config 抽取会识别为已存在而走 merge/manual
   migrateRuntimeBlock(dir);
@@ -1712,6 +2101,7 @@ function main() {
     reactMajor,
   );
   migratePagesToRoutes(dir);
+  migrateCustomServer(dir);
   assertRouteConventions(dir, routesGuard);
   writePostcss(dir, hadTailwind);
   flagManual(dir, reactMajor);

@@ -336,14 +336,16 @@ try {
     /defineRuntimeConfig/.test(rt) && /supportHtml5History/.test(rt),
   );
   check(
-    'App.tsx: runtime/bff → plugin-bff/runtime',
+    'App.tsx: runtime/bff → plugin-bff/client',
     !app.includes('@modern-js/runtime/bff') &&
-      app.includes('@modern-js/plugin-bff/runtime'),
+      app.includes('@modern-js/plugin-bff/client'),
   );
   check(
-    'server: runtime/server → server-runtime',
-    !a.read('server/index.ts').includes('@modern-js/runtime/server') &&
-      a.read('server/index.ts').includes('@modern-js/server-runtime'),
+    'server: index.* → modern.server.* 骨架（defineServerConfig，可 build）+ 移除 index.*',
+    a.has('server/modern.server.ts') &&
+      a.read('server/modern.server.ts').includes('defineServerConfig') &&
+      a.read('server/modern.server.ts').includes('@modern-js/server-runtime') &&
+      !a.has('server/index.ts'),
   );
   check(
     'React18: useRuntimeContext → useContext(RuntimeContext)',
@@ -367,7 +369,10 @@ try {
   const manualA = a.report().manual.join('\n');
   check('人工清单含 App.init', /App\.init/.test(manualA));
   check('人工清单含 自定义 server', /modern\.server/.test(manualA));
-  check('人工清单含 appIcon', /appIcon/.test(manualA));
+  check(
+    'appIcon 字符串自动迁移为对象 { icons:[{ src,size }] }（config.mdx）',
+    /appIcon:\s*\{\s*icons:\s*\[\{\s*src:/.test(a.read('modern.config.ts')),
+  );
   check('人工清单含 ssr', /ssr|SSR/.test(manualA));
 
   // C1. 已有 modern.runtime.ts + 复杂 dev 块：v2-edge-runtime
@@ -849,7 +854,7 @@ try {
     'notes.ts 里的 @modern-js/runtime/bff|server 原样保留（未被改写）',
     itNotes.includes('@modern-js/runtime/bff') &&
       itNotes.includes('@modern-js/runtime/server') &&
-      !itNotes.includes('@modern-js/plugin-bff/runtime'),
+      !itNotes.includes('@modern-js/plugin-bff/client'),
   );
   const itPkg = JSON.parse(it.read('package.json'));
   check(
@@ -892,8 +897,8 @@ try {
   const di = prepare('v2-edge-dynamic-import-comment');
   const diLazy = di.read('src/lazy.ts');
   check(
-    'dynamic import(/* magic */ ...) 改写为 plugin-bff/runtime',
-    diLazy.includes('@modern-js/plugin-bff/runtime') &&
+    'dynamic import(/* magic */ ...) 改写为 plugin-bff/client',
+    diLazy.includes('@modern-js/plugin-bff/client') &&
       !diLazy.includes('@modern-js/runtime/bff'),
   );
   check(
@@ -1127,6 +1132,90 @@ try {
     '[config] dev.port 迁到 server.port、顶层 dev 块已移除',
     !/\bdev\s*:/.test(lpMasked) &&
       /server\s*:\s*\{[^}]*port\s*:\s*3000/.test(lpMasked),
+  );
+
+  // C33. 综合真实形态（对齐 test_v2 真实迁移前 757d186）：自定义入口 function-decl bootstrap +
+  //      pages 约定式 + 用户自有 legacy-* + @modern-js/plugin-server + 复杂 output/source/tools/html v2 配置。
+  //      A 目标：迁移后依赖可安装（无不存在版本）、config 可解析、结构符合 v3、report 诚实区分自动/人工。
+  console.log('== C33. v2-real-comprehensive (757d186-like full surface) ==');
+  const cmp = prepare('v2-real-comprehensive');
+  const cmpPkg = JSON.parse(cmp.read('package.json'));
+  const cmpDeps = { ...cmpPkg.dependencies, ...cmpPkg.devDependencies };
+  check(
+    '[install] @modern-js/plugin-server 依赖已移除（不生成不存在的 3.x）',
+    !cmpDeps['@modern-js/plugin-server'],
+  );
+  check(
+    '[install] @modern-js/* 升到 3.0.0、清理 modern new/upgrade scripts',
+    cmpDeps['@modern-js/runtime'] === '3.0.0' &&
+      !cmpPkg.scripts.new &&
+      !cmpPkg.scripts.upgrade,
+  );
+  const cmpCfg = cmp.read('modern.config.ts');
+  const cmpMasked = cmpCfg.replace(/(['"`])(?:\\.|(?!\1).)*\1/g, '""');
+  check(
+    '[config] serverPlugin() 调用 + @modern-js/plugin-server import 已移除',
+    !/serverPlugin\s*\(/.test(cmpMasked) && !/plugin-server/.test(cmpCfg),
+  );
+  check(
+    '[config] output v2 字段改名：cssModules.localIdentName + sourceMap:false（取反）+ 无旧字段',
+    /cssModules:\s*\{\s*localIdentName:/.test(cmpCfg) &&
+      /sourceMap:\s*false/.test(cmpCfg) &&
+      !/cssModuleLocalIdentName|disableSourceMap|disableMinimize|enableInlineStyles/.test(
+        cmpMasked,
+      ),
+  );
+  check(
+    '[config] html.appIcon 字符串→对象、disableHtmlFolder→outputStructure',
+    /appIcon:\s*\{\s*icons:/.test(cmpCfg) &&
+      /outputStructure:/.test(cmpCfg) &&
+      !/disableHtmlFolder/.test(cmpMasked),
+  );
+  check(
+    '[config] tools.webpack→rspack、webpackChain→bundlerChain',
+    /\brspack\(/.test(cmpMasked) &&
+      /\bbundlerChain\(/.test(cmpMasked) &&
+      !/\bwebpack\(|webpackChain\(/.test(cmpMasked),
+  );
+  check(
+    '[config] source 废弃字段移除、dev 块移除、无悬挂逗号',
+    !/moduleScopes|enableCustomEntry|disableEntryDirs|resolveMainFields/.test(
+      cmpMasked,
+    ) &&
+      !/\bdev\s*:/.test(cmpMasked) &&
+      !/,\s*,/.test(cmpMasked) &&
+      !/\{\s*,/.test(cmpMasked),
+  );
+  check(
+    '[entry] function-declaration bootstrap → entry.tsx + createRoot/render',
+    cmp.has('src/entry.tsx') &&
+      !cmp.has('src/index.tsx') &&
+      /createRoot\(\)/.test(cmp.read('src/entry.tsx')) &&
+      /render\(<ModernRoot \/>\)/.test(cmp.read('src/entry.tsx')),
+  );
+  check(
+    '[routes] pages/index→routes/page + 自动生成根 routes/layout.tsx',
+    cmp.has('src/routes/page.tsx') &&
+      cmp.has('src/routes/layout.tsx') &&
+      !cmp.has('src/routes/index.tsx'),
+  );
+  check(
+    '[server] server/index.ts → modern.server.ts 骨架（defineServerConfig）',
+    cmp.has('server/modern.server.ts') &&
+      !cmp.has('server/index.ts') &&
+      /defineServerConfig/.test(cmp.read('server/modern.server.ts')),
+  );
+  check(
+    '[preserve] 用户自有 legacy-app / legacy-routes 原样保留',
+    cmp.has('src/legacy-app/App.tsx') &&
+      cmp.has('src/legacy-routes/layout.tsx'),
+  );
+  const cmpManual = cmp.report().manual.join('\n');
+  check(
+    '[honest-manual] report 点名 custom server 语义 + resolveMainFields + devServer 待人工',
+    /modern\.server/.test(cmpManual) &&
+      /resolveMainFields/.test(cmpManual) &&
+      /devServer/.test(cmpManual),
   );
 
   console.log(`\n结果：${pass} 通过 / ${fail} 失败`);

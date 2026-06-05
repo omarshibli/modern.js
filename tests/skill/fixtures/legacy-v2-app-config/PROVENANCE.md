@@ -8,7 +8,7 @@
 - `App.config` → 抽取生成 `src/modern.runtime.ts`
 - `App.init` → manual（运行时插件）
 - `server/index.ts`（`unstableMiddleware`）→ manual（`modern.server.ts` + Hono）
-- `@modern-js/runtime/bff` → `@modern-js/plugin-bff/runtime` + 补依赖 + `bffPlugin()`
+- `@modern-js/runtime/bff` → `@modern-js/plugin-bff/client` + 补依赖 + `bffPlugin()`
 - `dev.port` → `server.port`、tailwind 移除、`html.appIcon`/`ssr` → manual
 - React 18 `useRuntimeContext()` → `useContext(RuntimeContext)`
 
