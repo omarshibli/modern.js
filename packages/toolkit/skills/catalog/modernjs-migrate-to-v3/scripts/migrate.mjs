@@ -1358,51 +1358,70 @@ function addImportMove(moveMap, fromRel, toRel) {
   }
 }
 
+// 纯计算（只读、不落盘）：在给定路由文件目录上算出 pages→routes 的相对移动列表 + import moveMap，
+// 并在**任何写盘前**检出冲突（两个源映射到同一 page.*、或目标已被非源文件占用）即抛错。
+// baseDir 用 pages 目录（rename 前）算，相对路径与 rename 后的 routes 目录一致，故可提前预检。
+function planPagesMoves(baseDir) {
+  const moveMap = new Map();
+  const relMoves = collectFiles(baseDir)
+    .map(file => {
+      const fromRel = posixRel(baseDir, file);
+      return { fromRel, toRel: pageFileTargetRel(fromRel) };
+    })
+    .filter(m => m.fromRel !== m.toRel);
+  const sourceRels = new Set(relMoves.map(m => m.fromRel));
+  const targets = new Map();
+  for (const m of relMoves) {
+    const existing = targets.get(m.toRel);
+    if (existing) {
+      throw new Error(
+        `pages→routes 迁移冲突：${existing} 与 ${m.fromRel} 都会映射到 ${m.toRel}，请人工合并`,
+      );
+    }
+    targets.set(m.toRel, m.fromRel);
+    const targetExists = fs.existsSync(
+      path.join(baseDir, ...m.toRel.split('/')),
+    );
+    if (targetExists && !sourceRels.has(m.toRel)) {
+      throw new Error(
+        `pages→routes 迁移冲突：${m.fromRel} 与 ${m.toRel} 目标冲突，请人工合并`,
+      );
+    }
+    addImportMove(moveMap, m.fromRel, m.toRel);
+  }
+  return { relMoves, moveMap };
+}
+
+// 写盘前预检：pages→routes 若有冲突，在 main 改任何文件（依赖/scripts/config）之前就抛错中止，
+// 保证失败时 src/pages、package.json、report 全部保持未改（事务性）。
+function assertPagesMigrationSafe(dir) {
+  const src = path.join(dir, 'src');
+  if (exists(src, 'pages') && !exists(src, 'routes')) {
+    planPagesMoves(path.join(src, 'pages'));
+  }
+}
+
 function migratePagesToRoutes(dir) {
   const src = path.join(dir, 'src');
   if (exists(src, 'pages') && !exists(src, 'routes')) {
     const routesDir = path.join(src, 'routes');
+    // 先在原 src/pages 上算移动计划 + 冲突预检（无冲突才落盘）
+    const { relMoves, moveMap } = planPagesMoves(path.join(src, 'pages'));
     fs.renameSync(path.join(src, 'pages'), routesDir);
-    const moveMap = new Map();
-    const moves = collectFiles(routesDir)
-      .map(file => {
-        const fromRel = posixRel(routesDir, file);
-        const toRel = pageFileTargetRel(fromRel);
-        return {
-          from: file,
-          fromRel,
-          to: path.join(routesDir, ...toRel.split('/')),
-          toRel,
-        };
-      })
-      .filter(m => m.fromRel !== m.toRel);
-    const sources = new Set(moves.map(m => m.from));
-    const targets = new Map();
-    for (const m of moves) {
-      const existing = targets.get(m.to);
-      if (existing) {
-        throw new Error(
-          `pages→routes 迁移冲突：${existing} 与 ${m.fromRel} 都会映射到 ${m.toRel}，请人工合并`,
-        );
-      }
-      targets.set(m.to, m.fromRel);
-      if (fs.existsSync(m.to) && !sources.has(m.to)) {
-        throw new Error(
-          `pages→routes 迁移冲突：${m.fromRel} 与 ${m.toRel} 目标冲突，请人工合并`,
-        );
-      }
-      addImportMove(moveMap, m.fromRel, m.toRel);
-    }
     const tmp = path.join(routesDir, `.modernjs-migrate-${Date.now()}`);
-    if (moves.length) fs.mkdirSync(tmp, { recursive: true });
-    for (let i = 0; i < moves.length; i += 1) {
-      fs.renameSync(moves[i].from, path.join(tmp, String(i)));
-    }
-    for (let i = 0; i < moves.length; i += 1) {
-      fs.mkdirSync(path.dirname(moves[i].to), { recursive: true });
-      fs.renameSync(path.join(tmp, String(i)), moves[i].to);
-    }
-    if (moves.length) {
+    if (relMoves.length) fs.mkdirSync(tmp, { recursive: true });
+    relMoves.forEach((m, i) =>
+      fs.renameSync(
+        path.join(routesDir, ...m.fromRel.split('/')),
+        path.join(tmp, String(i)),
+      ),
+    );
+    relMoves.forEach((m, i) => {
+      const to = path.join(routesDir, ...m.toRel.split('/'));
+      fs.mkdirSync(path.dirname(to), { recursive: true });
+      fs.renameSync(path.join(tmp, String(i)), to);
+    });
+    if (relMoves.length) {
       fs.rmSync(tmp, { recursive: true, force: true });
       removeEmptyDirs(routesDir);
     }
@@ -1620,6 +1639,8 @@ function main() {
   const entryType = detectEntryType(dir);
   const routesGuard = createRoutesGuard(dir, entryType);
   assertRouteConventions(dir, routesGuard);
+  // pages→routes 冲突预检（写盘前）：有冲突立即中止，src/pages、package.json、report 均保持未改
+  assertPagesMigrationSafe(dir);
 
   // 二次保护（不依赖 scan）：workspace/monorepo 协议 + 无任何 v2-only 信号 → ambiguous，
   // 可能已是 v3 workspace 应用，拒绝迁移、不改任何文件

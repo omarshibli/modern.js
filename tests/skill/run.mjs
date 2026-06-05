@@ -1051,6 +1051,37 @@ try {
     !ri.has('.agents/runs/modernjs-migrate/report.json'),
   );
 
+  // C31. blocker：pages 映射冲突（foo.tsx + foo/index.tsx 都→ foo/page.tsx）必须写盘前预检失败，
+  //      失败时事务性零改动——src/pages 保留、src/routes 不创建、package.json 未升级/删 scripts、无 report。
+  console.log('== C31. v2-edge-pages-conflict (atomic conflict pre-check) ==');
+  const pc = prepare('v2-edge-pages-conflict', false);
+  const pcPkgBefore = pc.read('package.json');
+  let pagesConflictBlocked = false;
+  try {
+    execFileSync(
+      'node',
+      [path.join(SCRIPTS, 'migrate.mjs'), pc.work, '--to=3.0.0'],
+      { encoding: 'utf8', stdio: 'pipe' },
+    );
+  } catch {
+    pagesConflictBlocked = true;
+  }
+  check('[blocking] pages 冲突写盘前阻断（exit 1）', pagesConflictBlocked);
+  check(
+    '[blocking] 冲突时 src/pages 保留、src/routes 未创建',
+    pc.has('src/pages/foo.tsx') &&
+      pc.has('src/pages/foo/index.tsx') &&
+      !pc.has('src/routes'),
+  );
+  check(
+    '[blocking] 冲突时 package.json 未改（依赖未升、scripts 未删）',
+    pc.read('package.json') === pcPkgBefore,
+  );
+  check(
+    '[blocking] 冲突时未产生 report.json',
+    !pc.has('.agents/runs/modernjs-migrate/report.json'),
+  );
+
   console.log(`\n结果：${pass} 通过 / ${fail} 失败`);
   if (fail > 0) process.exit(1);
   console.log('✅ migrate-to-v3 skill 迁移验证通过');
