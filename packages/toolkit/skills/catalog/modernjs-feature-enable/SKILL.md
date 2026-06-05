@@ -10,17 +10,22 @@ description: 在已有的 Modern.js 3.0 应用里启用可选功能（BFF、自�
 > ⚠️ **`modern new` 在 Modern.js 3.0 已移除**（见 `packages/document/docs/zh/guides/upgrade/other.md:107`、`:111`：「移除了 `modern new` 和 `modern upgrade` 命令，需要按照文档手动操作」「`modern new` 命令在 Modern.js 3.0 中不再支持，无法通过命令添加入口或启用功能」）。
 > `packages/document/docs/{zh,en}/apis/app/commands.mdx` 里残留的 `## modern new` 是 **stale doc**，不可作为现行依据，**不要让用户去跑 `modern new`**。本 skill 即官方推荐的「按文档手动操作」的自动化等价物。
 
-## 支持的功能
+## 能力矩阵（按自动化级别分层）
 
-| 功能 | 参数值 | 状态 | 现行依据（当前仓库文档） |
+> **不是「Modern.js v3 只能启用这几个」**。v3 里很多能力是**内置约定/配置**（Less/Sass 默认支持、Data Loader 是 `.data.ts` 约定、SSR/RSC 是配置/架构选择），不存在「启用插件」这一步，故不在本矩阵；微前端是架构决策。本 skill 覆盖的是「装插件/改配置就能开」的可选能力。
+
+| 功能 | 参数值 | 级别 | 现行依据（当前仓库文档） |
 | --- | --- | --- | --- |
-| BFF（一体化后端） | `bff` | ✅ 自动化 | `guides/advanced-features/bff.mdx`、`components/enable-bff.mdx` |
-| 静态站点生成 SSG | `ssg` | ✅ 自动化 | `components/enable-ssg.mdx`、`configure/app/output/ssg.mdx` |
-| 自定义 Web Server | `server` | 📝 manual | `references/other-features.md` |
-| Tailwind CSS | `tailwindcss` | 📝 manual | `references/other-features.md` |
-| 微前端（Garfish） | `microFrontend` | 📝 manual | `references/other-features.md` |
+| BFF（一体化后端） | `bff` | ✅ 可自动启用 | `guides/advanced-features/bff/function.mdx`、`components/enable-bff.mdx` |
+| 静态站点生成 SSG | `ssg` | ✅ 可自动启用 | `components/enable-ssg.mdx`、`configure/app/output/ssg.mdx` |
+| styled-components | `styled-components` | ✅ 可自动启用 | `cli/plugin-styled-components`、`plugin/official/cli-plugins/plugin-styled-components.mdx` |
+| Tailwind CSS（v3） | `tailwindcss` | 🛠 脚手架（骨架自动 + 语义人工） | `guides/basic-features/css/tailwindcss.mdx`（Rsbuild 原生，非 @modern-js 插件） |
+| 自定义 Web Server | `server` | 🛠 脚手架（骨架自动 + 语义人工） | `guides/upgrade/web-server`、`@modern-js/server-runtime` |
+| 微前端 | `microFrontend` | 📝 需架构决策（输出 checklist） | `components/micro-frontend.mdx`（v3 无 plugin-garfish，按 module federation / masterApp 决策） |
 
-> 已自动化：BFF、SSG（完整闭环）；其余功能先给出基于当前文档的人工步骤，后续逐个自动化。
+> ✅ 可自动启用 = 装依赖 + modern.config 插件 + 必要文件，全自动闭环。
+> 🛠 脚手架 = 自动生成可构建骨架 + 依赖/配置，但业务语义（server middleware / tailwind 的 CSS 接入与 v3·v4 选择）需人工补，report 会写清。
+> 📝 需架构决策 = v3 无足够源码/文档依据自动化，`enable.mjs` 仍可执行并输出**可执行 checklist + 原因**，不会让用户以为「没这功能」。
 
 ## 执行步骤
 
@@ -45,9 +50,11 @@ node scripts/enable.mjs bff <projectDir>
 - **依赖**：添加 `@modern-js/plugin-bff`，版本与 `@modern-js/app-tools` 保持一致（官方包统一版本号）
 - **配置**：`modern.config.*` 顶层 `plugins` 追加 `bffPlugin()`（已有则幂等跳过）
 - **tsconfig**：添加 `paths["@api/*"] = ["./api/lambda/*"]` 与 `include` 增加 `api`（非标准 JSON 则进人工清单）
-- **scaffold**：无 `api/` 时生成 `api/lambda/index.ts` 示例函数（已有 `api/` 不覆盖）
+- **端到端示例**（依据 `bff/function.mdx`）：生成/复用 `api/lambda/hello.ts`（`export const get`，已有 api 不覆盖、优先复用已有 GET/default），并**接进真实页面**——默认模板首页可安全替换则改 `src/routes/page.tsx`（`import { get as hello } from '@api/hello'` + `useEffect`），已有业务首页则新建 `src/routes/bff-demo/page.tsx`（report 写清访问路径）；非约定式路由进人工清单给出示例
 
 查看 `.agents/runs/modernjs-feature-enable/report.json` 的 `changed` / `manual`。
+
+**其它能力**：`styled-components`（插件，自动）、`tailwindcss`（Rsbuild 原生脚手架）、`server`（生成 `server/modern.server.ts` 骨架 + `@modern-js/server-runtime` + tsconfig include，业务语义人工）、`microFrontend`（输出可执行 checklist）。
 
 **SSG（自动化）**：
 

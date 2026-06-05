@@ -74,7 +74,14 @@ try {
     },
   );
   check('scan 判定 v3', /\(v3\)/.test(scanOut));
-  check('scan: bff 未启用 [自动]', /bff（.*）：未启用 \[自动\]/.test(scanOut));
+  check('scan: bff 在能力矩阵且未启用', /bff（.*）：未启用/.test(scanOut));
+  check(
+    'scan: 能力矩阵含 server/tailwindcss/microFrontend（不再只 bff/ssg）',
+    /server（/.test(scanOut) &&
+      /tailwindcss（/.test(scanOut) &&
+      /microFrontend（/.test(scanOut) &&
+      /styled-components（/.test(scanOut),
+  );
 
   execFileSync('node', [path.join(SCRIPTS, 'enable.mjs'), 'bff', a.work], {
     encoding: 'utf8',
@@ -116,14 +123,27 @@ try {
       JSON.stringify(['./src/*']),
   );
 
-  check('[auto] scaffold api/lambda/index.ts', a.has('api/lambda/index.ts'));
   check(
-    '[auto] scaffold 内容是 BFF 函数（default export async）',
-    /export default async/.test(a.read('api/lambda/index.ts')),
+    '[auto] scaffold api/lambda/hello.ts（export const get）',
+    a.has('api/lambda/hello.ts') &&
+      /export\s+const\s+get\b/.test(a.read('api/lambda/hello.ts')),
+  );
+  // v3-app-no-bff 的首页是自定义页（非默认模板）→ 不改首页、新建 bff-demo 路由示例
+  check(
+    '[auto] 自定义首页未改动 → 新建 src/routes/bff-demo/page.tsx',
+    a.has('src/routes/bff-demo/page.tsx'),
+  );
+  check(
+    '[e2e] bff-demo 页真实 import @api/hello + useEffect 调用',
+    /import\s*\{\s*get as hello\s*\}\s*from\s*['"]@api\/hello['"]/.test(
+      a.read('src/routes/bff-demo/page.tsx'),
+    ) &&
+      /useEffect\(/.test(a.read('src/routes/bff-demo/page.tsx')) &&
+      /hello\(\)\.then\(/.test(a.read('src/routes/bff-demo/page.tsx')),
   );
 
   const report = a.report();
-  check('report.changed 含 4 项自动改写', report.changed.length === 4);
+  check('report.changed 含 5 项自动改写', report.changed.length === 5);
   check(
     'report.manual 为空（干净 v3 app 可全自动）',
     report.manual.length === 0,
@@ -220,7 +240,7 @@ try {
   const sScan = execFileSync('node', [path.join(SCRIPTS, 'scan.mjs'), s.work], {
     encoding: 'utf8',
   });
-  check('scan: ssg 标为 [自动]', /ssg（.*）：未启用 \[自动\]/.test(sScan));
+  check('scan: ssg 在能力矩阵且未启用', /ssg（.*）：未启用/.test(sScan));
   execFileSync('node', [path.join(SCRIPTS, 'enable.mjs'), 'ssg', s.work], {
     encoding: 'utf8',
   });
@@ -344,9 +364,12 @@ try {
     [path.join(SCRIPTS, 'enable.mjs'), 'bff', al.work, '--json'],
     { encoding: 'utf8' },
   );
-  check('alias 已启用：changed 为空', JSON.parse(alOut).changed.length === 0);
   check(
-    'alias 调用不重复（bff() 仍 1 处）',
+    'alias 已启用：插件部分进 manual（已启用），不重复改 config',
+    /已启用/.test(JSON.parse(alOut).manual.join('\n')),
+  );
+  check(
+    'alias 调用不重复（bff() 仍 1 处，未误判 alias 而重复 append）',
     (al.read('modern.config.ts').match(/\bbff\(\)/g) || []).length === 1,
   );
 
@@ -597,6 +620,143 @@ try {
   check(
     'ssgByEntries 已启用文案点名 ssgByEntries（不误写 output.ssg）',
     /ssgByEntries（已有入口启用）/.test(JSON.parse(btRe).manual.join('\n')),
+  );
+
+  // ===== D. BFF 端到端示例：默认模板首页 → 安全接首页 =====
+  console.log('== D1. bff e2e: default template homepage → patch 首页 ==');
+  const dp = prepare('v3-app-default-page');
+  execFileSync('node', [path.join(SCRIPTS, 'enable.mjs'), 'bff', dp.work], {
+    encoding: 'utf8',
+  });
+  const dpPage = dp.read('src/routes/page.tsx');
+  check(
+    '默认模板首页被接入 BFF 调用（import @api/hello + useEffect，未走 bff-demo）',
+    /import\s*\{\s*get as hello\s*\}\s*from\s*['"]@api\/hello['"]/.test(
+      dpPage,
+    ) &&
+      /useEffect\(/.test(dpPage) &&
+      /hello\(\)\.then\(/.test(dpPage) &&
+      !dp.has('src/routes/bff-demo/page.tsx'),
+  );
+  check(
+    'api/lambda/hello.ts 生成（export const get）',
+    /export\s+const\s+get\b/.test(dp.read('api/lambda/hello.ts')),
+  );
+  // 幂等：再跑一次首页不重复改、不报 changed
+  const dpRe = execFileSync(
+    'node',
+    [path.join(SCRIPTS, 'enable.mjs'), 'bff', dp.work, '--json'],
+    { encoding: 'utf8' },
+  );
+  check(
+    '幂等：默认页已接入后再跑 changed 为空',
+    JSON.parse(dpRe).changed.length === 0,
+  );
+
+  // ===== D2. BFF：已有 api 不覆盖，复用真实函数 =====
+  console.log('== D2. bff e2e: existing api reused (no overwrite) ==');
+  const ea = prepare('v3-app-bff-existing-api');
+  execFileSync('node', [path.join(SCRIPTS, 'enable.mjs'), 'bff', ea.work], {
+    encoding: 'utf8',
+  });
+  check(
+    '已有 api/lambda/hello.ts 未被覆盖（仍是用户内容）',
+    /existing api response/.test(ea.read('api/lambda/hello.ts')),
+  );
+  check(
+    '复用已有 api 进 manual（说明未改用户 API）',
+    /复用已有 api\/lambda\/hello/.test(ea.report().manual.join('\n')),
+  );
+  check(
+    '默认首页接入复用的 @api/hello 调用',
+    /@api\/hello/.test(ea.read('src/routes/page.tsx')),
+  );
+
+  // ===== D3. server 骨架化 =====
+  console.log('== D3. enable server (scaffold) ==');
+  const sv = prepare('v3-app-no-bff');
+  execFileSync('node', [path.join(SCRIPTS, 'enable.mjs'), 'server', sv.work], {
+    encoding: 'utf8',
+  });
+  check(
+    'server: 加 @modern-js/server-runtime + 生成可构建 modern.server.ts 骨架',
+    JSON.parse(sv.read('package.json')).dependencies[
+      '@modern-js/server-runtime'
+    ] &&
+      sv.has('server/modern.server.ts') &&
+      /defineServerConfig\(\{\}\)/.test(sv.read('server/modern.server.ts')),
+  );
+  check(
+    'server: 业务语义进 manual（不声称已迁好）',
+    /业务语义需人工补全/.test(sv.report().manual.join('\n')),
+  );
+  const svRe = execFileSync(
+    'node',
+    [path.join(SCRIPTS, 'enable.mjs'), 'server', sv.work, '--json'],
+    { encoding: 'utf8' },
+  );
+  check('server 幂等：再跑不重复生成', JSON.parse(svRe).changed.length === 0);
+
+  // ===== D4. styled-components（插件式自动化）=====
+  console.log('== D4. enable styled-components ==');
+  const sc = prepare('v3-app-no-bff');
+  execFileSync(
+    'node',
+    [path.join(SCRIPTS, 'enable.mjs'), 'styled-components', sc.work],
+    { encoding: 'utf8' },
+  );
+  const scCfg = sc.read('modern.config.ts');
+  check(
+    'styled-components: 加依赖 + plugins 追加 styledComponentsPlugin()',
+    JSON.parse(sc.read('package.json')).dependencies[
+      '@modern-js/plugin-styled-components'
+    ] && /styledComponentsPlugin\(\)/.test(scCfg),
+  );
+
+  // ===== D5. tailwindcss（Rsbuild 原生脚手架）=====
+  console.log('== D5. enable tailwindcss (Rsbuild-native scaffold) ==');
+  const tw = prepare('v3-app-no-bff');
+  execFileSync(
+    'node',
+    [path.join(SCRIPTS, 'enable.mjs'), 'tailwindcss', tw.work],
+    {
+      encoding: 'utf8',
+    },
+  );
+  const twPkg = JSON.parse(tw.read('package.json'));
+  check(
+    'tailwindcss: 装 tailwindcss/postcss/autoprefixer + tailwind.config + postcss.config + @tailwind css',
+    twPkg.devDependencies.tailwindcss &&
+      tw.has('tailwind.config.ts') &&
+      tw.has('postcss.config.cjs') &&
+      /@tailwind base/.test(tw.read('src/tailwind.css')),
+  );
+  check(
+    'tailwindcss: 收尾（import css / v4 分支）进 manual',
+    /Tailwind 收尾/.test(tw.report().manual.join('\n')),
+  );
+
+  // ===== D6. microFrontend：不自动化 → 可执行 checklist + 原因，不改文件 =====
+  console.log('== D6. enable microFrontend (manual plan checklist) ==');
+  const mf = prepare('v3-app-no-bff');
+  const mfOut = execFileSync(
+    'node',
+    [path.join(SCRIPTS, 'enable.mjs'), 'microFrontend', mf.work, '--json'],
+    { encoding: 'utf8' },
+  );
+  const mfReport = JSON.parse(mfOut);
+  check(
+    'microFrontend: tier=manual-decision、changed 为空（未改文件）',
+    mfReport.tier === 'manual-decision' && mfReport.changed.length === 0,
+  );
+  check(
+    'microFrontend: 输出原因 + 可执行 checklist（非 unsupported）',
+    /架构决策/.test(mfReport.manual.join('\n')) &&
+      mfReport.manual.some(m => /\[1\]/.test(m)),
+  );
+  check(
+    'microFrontend: 未改写 modern.config / package.json',
+    !/garfish|masterApp/.test(mf.read('modern.config.ts')),
   );
 
   console.log(`\n结果：${pass} 通过 / ${fail} 失败`);

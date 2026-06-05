@@ -664,3 +664,112 @@ export const DEPRECATED = {
   ],
   note: '本 skill 即「按文档手动启用功能」的自动化等价物；不要执行 modern new。',
 };
+
+// 功能能力矩阵（scan 与 enable 共用单一事实源）。tier：
+//   'auto'     —— 插件式可全自动闭环（装依赖 + modern.config 插件 + 必要文件/示例）
+//   'scaffold' —— 配置/脚手架式可自动化：生成可构建骨架 + 依赖/配置，但业务语义需人工补（report 说明）
+//   'manual'   —— 需架构决策，v3 无足够源码/文档依据自动化 → 输出可执行 checklist + 原因，不静默假启用
+// 依据：bff/ssg=cli/plugin-bff·plugin-ssg；styled-components=cli/plugin-styled-components；
+//   tailwind=v3 改 Rsbuild 原生（guides/basic-features/css/tailwindcss.mdx）；server=server-runtime + server/modern.server.ts；
+//   microFrontend=v3 无 plugin-garfish，按 module federation / masterApp 架构决策。
+export const FEATURE_CATALOG = [
+  {
+    key: 'bff',
+    label: 'BFF（一体化后端）',
+    tier: 'auto',
+    doc: 'references/enable-bff.md',
+  },
+  {
+    key: 'ssg',
+    label: '静态站点生成 SSG',
+    tier: 'auto',
+    doc: 'references/enable-ssg.md',
+  },
+  {
+    key: 'styled-components',
+    label: 'styled-components（CSS-in-JS）',
+    tier: 'auto',
+    doc: 'references/other-features.md',
+  },
+  {
+    key: 'tailwindcss',
+    label: 'Tailwind CSS（v3，Rsbuild 原生）',
+    tier: 'scaffold',
+    doc: 'references/other-features.md',
+  },
+  {
+    key: 'server',
+    label: '自定义 Web Server（骨架）',
+    tier: 'scaffold',
+    doc: 'references/other-features.md',
+  },
+  {
+    key: 'microFrontend',
+    label: '微前端（Module Federation / masterApp）',
+    tier: 'manual',
+    doc: 'references/other-features.md',
+  },
+];
+
+export const TIER_LABEL = {
+  auto: '可自动启用',
+  scaffold: '可脚手架（骨架自动 + 语义人工）',
+  manual: '需架构决策（输出 checklist）',
+};
+
+function hasTailwindConfig(dir) {
+  return [
+    'tailwind.config.ts',
+    'tailwind.config.js',
+    'tailwind.config.cjs',
+    'tailwind.config.mjs',
+  ].some(f => exists(dir, f));
+}
+
+// 功能「是否已启用」探测（只读）。返回 true | false | 'unknown'
+export function featureEnabled(key, dir) {
+  const configFile = findConfigFile(dir);
+  const configText = configFile ? readText(path.join(dir, configFile)) : '';
+  const pkg = exists(dir, 'package.json')
+    ? JSON.parse(readText(path.join(dir, 'package.json')))
+    : {};
+  const deps = {
+    ...pkg.dependencies,
+    ...pkg.devDependencies,
+    ...pkg.peerDependencies,
+  };
+  switch (key) {
+    case 'bff':
+      return isPluginEnabled(configText, '@modern-js/plugin-bff', 'bffPlugin');
+    case 'ssg':
+      return (
+        isPluginEnabled(configText, '@modern-js/plugin-ssg', 'ssgPlugin') &&
+        hasOutputSsg(configText)
+      );
+    case 'styled-components':
+      return isPluginEnabled(
+        configText,
+        '@modern-js/plugin-styled-components',
+        'styledComponentsPlugin',
+      );
+    case 'tailwindcss':
+      return Boolean(deps.tailwindcss) && hasTailwindConfig(dir);
+    case 'server':
+      return (
+        exists(dir, 'server', 'modern.server.ts') ||
+        exists(dir, 'server', 'modern.server.js')
+      );
+    case 'microFrontend':
+      return 'unknown';
+    default:
+      return false;
+  }
+}
+
+// 功能状态汇总（scan/enable 共用）：[{ key,label,tier,enabled }]
+export function featureMatrix(dir) {
+  return FEATURE_CATALOG.map(f => ({
+    ...f,
+    enabled: featureEnabled(f.key, dir),
+  }));
+}
