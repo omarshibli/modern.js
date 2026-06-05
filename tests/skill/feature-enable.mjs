@@ -856,6 +856,52 @@ try {
     JSON.parse(sv2Out).tier === 'scaffold',
   );
 
+  // ===== D11. styled-components 半启用：config 有插件但缺 peer → 仍补 peer（不直接 return）=====
+  console.log(
+    '== D11. styled-components half-enabled (plugin present, peer missing) ==',
+  );
+  const shc = prepare('v3-app-styled-half');
+  const shScan1 = execFileSync(
+    'node',
+    [path.join(SCRIPTS, 'scan.mjs'), shc.work],
+    {
+      encoding: 'utf8',
+    },
+  );
+  check(
+    'scan: 有插件但缺 peer → 未启用（半启用不算完整）',
+    /styled-components（.*）：未启用/.test(shScan1),
+  );
+  const shOut = execFileSync(
+    'node',
+    [path.join(SCRIPTS, 'enable.mjs'), 'styled-components', shc.work, '--json'],
+    { encoding: 'utf8' },
+  );
+  const shReport = JSON.parse(shOut);
+  check(
+    'enable: 半启用态补 peer（changed 含 styled-components）',
+    shReport.changed.some(c => /styled-components@/.test(c)) &&
+      Boolean(
+        JSON.parse(shc.read('package.json')).dependencies['styled-components'],
+      ),
+  );
+  check(
+    'enable: 插件未重复 append（styledComponentsPlugin() 仍 1 处）',
+    (shc.read('modern.config.ts').match(/styledComponentsPlugin\(\)/g) || [])
+      .length === 1,
+  );
+  const shScan2 = execFileSync(
+    'node',
+    [path.join(SCRIPTS, 'scan.mjs'), shc.work],
+    {
+      encoding: 'utf8',
+    },
+  );
+  check(
+    'scan: 补 peer 后 → 已启用',
+    /styled-components（.*）：已启用/.test(shScan2),
+  );
+
   console.log(`\n结果：${pass} 通过 / ${fail} 失败`);
   if (fail > 0) process.exit(1);
   console.log('✅ feature-enable skill 验证通过');

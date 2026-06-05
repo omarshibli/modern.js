@@ -464,6 +464,7 @@ function enableBff(dir) {
 }
 
 function enableStyledComponents(dir) {
+  // 插件部分幂等：已有则不重复改 config；但 peer 始终确保（半启用态：有插件缺 peer 也要补，否则缺库）
   if (
     isPluginEnabled(
       readConfig(dir),
@@ -471,16 +472,16 @@ function enableStyledComponents(dir) {
       'styledComponentsPlugin',
     )
   ) {
-    note(manual, 'styled-components 插件似乎已启用，未重复改写');
-    return;
+    note(manual, 'styled-components 插件已在 config，未重复改写');
+  } else {
+    addModernDep(dir, '@modern-js/plugin-styled-components');
+    addPluginToConfig(dir, {
+      importPkg: '@modern-js/plugin-styled-components',
+      pluginName: 'styledComponentsPlugin',
+    });
   }
-  addModernDep(dir, '@modern-js/plugin-styled-components');
-  // 插件的 peer 是 styled-components（^5.3.1）；不装 peer 则运行时缺库、build/use 失败 → 必须补
+  // peer styled-components（^5.3.1，插件 peerDependencies）：不论插件是否已在，缺则补（addDep 幂等）
   addDep(dir, 'styled-components', '^5.3.1', false);
-  addPluginToConfig(dir, {
-    importPkg: '@modern-js/plugin-styled-components',
-    pluginName: 'styledComponentsPlugin',
-  });
 }
 
 // Tailwind CSS：v3 不再是 @modern-js 插件，走 Rsbuild 现行口径（guides/basic-features/css/tailwindcss.mdx）。
@@ -658,7 +659,7 @@ function main() {
     plan.checklist.forEach((c, i) => note(manual, `  [${i + 1}] ${c}`));
   }
 
-  const catalogTier = (FEATURE_CATALOG.find(f => f.key === feature) || {}).tier;
+  const catalogTier = FEATURE_CATALOG.find(f => f.key === feature)?.tier;
   const report = {
     projectDir: dir,
     feature,
