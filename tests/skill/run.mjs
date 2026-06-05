@@ -1082,6 +1082,53 @@ try {
     !pc.has('.agents/runs/modernjs-migrate/report.json'),
   );
 
+  // C32. 真实复杂形态（对齐 test_v2 真实迁移前 757d186）：用户自有 legacy-* 目录 + pages 约定式首页
+  //      + 自定义入口 index.* + 仅含 port 的顶层 dev 块。回归两个真实 bug：
+  //      ① legacy-* 预存在不应被误判为「迁移生成」而中止；② dev 块整块移除不能留悬挂逗号（否则 config 解析失败）。
+  console.log(
+    '== C32. v2-edge-legacy-pages-dev (real-shape, no false abort / no broken config) ==',
+  );
+  const lp = prepare('v2-edge-legacy-pages-dev');
+  let lpThrew = false;
+  try {
+    execFileSync(
+      'node',
+      [path.join(SCRIPTS, 'migrate.mjs'), lp.work, '--to=3.0.0'],
+      { encoding: 'utf8', stdio: 'pipe' },
+    );
+  } catch {
+    lpThrew = true;
+  }
+  check(
+    '[no-false-abort] 预存在 legacy-* 不触发中止（迁移正常完成）',
+    !lpThrew,
+  );
+  check(
+    '[routes] pages/index.* → routes/page.*（非 routes/index.*）',
+    lp.has('src/routes/page.tsx') && !lp.has('src/routes/index.tsx'),
+  );
+  check(
+    '[entry] 自定义入口 index.tsx → entry.tsx',
+    lp.has('src/entry.tsx') && !lp.has('src/index.tsx'),
+  );
+  check(
+    '[preserve] 用户自有 legacy-app / legacy-routes 原样保留',
+    lp.has('src/legacy-app/App.tsx') && lp.has('src/legacy-routes/layout.tsx'),
+  );
+  const lpCfg = lp.read('modern.config.ts');
+  const lpMasked = lpCfg.replace(/(['"`])(?:\\.|(?!\1).)*\1/g, '""');
+  check(
+    '[config] dev 块整块移除后无悬挂逗号（,, 或 {, 或 (,）',
+    !/,\s*,/.test(lpMasked) &&
+      !/\{\s*,/.test(lpMasked) &&
+      !/\(\s*,/.test(lpMasked),
+  );
+  check(
+    '[config] dev.port 迁到 server.port、顶层 dev 块已移除',
+    !/\bdev\s*:/.test(lpMasked) &&
+      /server\s*:\s*\{[^}]*port\s*:\s*3000/.test(lpMasked),
+  );
+
   console.log(`\n结果：${pass} 通过 / ${fail} 失败`);
   if (fail > 0) process.exit(1);
   console.log('✅ migrate-to-v3 skill 迁移验证通过');

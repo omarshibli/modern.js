@@ -73,14 +73,22 @@ function collectRouteIndexFiles(src) {
   return out;
 }
 
+// 迁移前快照（在任何改写前调用）。护栏只比对快照，**只拦截「迁移新生成」的违规结构**，
+// 不误伤用户迁移前就存在的目录/文件（例如用户自己命名的 src/legacy-app）。
 function createRoutesGuard(dir, entryType) {
-  if (entryType !== 'routes') return null;
   const src = path.join(dir, 'src');
   const routes = path.join(src, 'routes');
+  const legacyDirsBefore = new Set(
+    ['legacy-app', 'legacy-routes']
+      .map(name => path.join(src, name))
+      .filter(fs.existsSync),
+  );
   return {
+    isRoutesMode: entryType === 'routes',
     hadRootPage: Boolean(firstExistingFile(routes, 'page')),
     hadRootLayout: Boolean(firstExistingFile(routes, 'layout')),
     entryFilesBefore: new Set(listExistingFiles(src, 'entry')),
+    legacyDirsBefore,
   };
 }
 
@@ -102,22 +110,25 @@ function routeConventionErrors(dir, guard = null) {
   if (guard?.hadRootLayout && !firstExistingFile(routes, 'layout')) {
     errors.push('迁移前存在 src/routes/layout.*，迁移后必须保留');
   }
-  const generatedEntry = guard
-    ? listExistingFiles(src, 'entry').filter(
-        f => !guard.entryFilesBefore.has(f),
-      )
-    : [];
-  if (generatedEntry.length) {
-    errors.push(
-      `routes 入口模式禁止凭空生成自定义入口：${generatedEntry.map(rel).join(', ')}`,
+  // routes 入口模式才禁止「新生成」自定义入口；custom-index 模式下 index.*→entry.* 是官方正确迁移
+  if (guard?.isRoutesMode) {
+    const generatedEntry = listExistingFiles(src, 'entry').filter(
+      f => !guard.entryFilesBefore.has(f),
     );
+    if (generatedEntry.length) {
+      errors.push(
+        `routes 入口模式禁止凭空生成自定义入口：${generatedEntry.map(rel).join(', ')}`,
+      );
+    }
   }
-  const legacyDirs = ['legacy-app', 'legacy-routes']
+  // 只拦截「迁移新生成」的 legacy-* 目录；用户迁移前就有的同名目录原样保留、不报错
+  const before = guard?.legacyDirsBefore ?? new Set();
+  const newLegacyDirs = ['legacy-app', 'legacy-routes']
     .map(name => path.join(src, name))
-    .filter(fs.existsSync);
-  if (legacyDirs.length) {
+    .filter(p => fs.existsSync(p) && !before.has(p));
+  if (newLegacyDirs.length) {
     errors.push(
-      `迁移脚本不允许生成 legacy-* 目录：${legacyDirs.map(rel).join(', ')}`,
+      `迁移脚本不允许生成 legacy-* 目录：${newLegacyDirs.map(rel).join(', ')}`,
     );
   }
   return errors;
@@ -833,12 +844,26 @@ function migrateConfig(dir) {
           .slice(props[portIdx].indexOf(':') + 1)
           .trim();
         const rest = props.filter((_, i) => i !== portIdx);
-        const devReplacement = rest.length ? `dev: { ${rest.join(', ')} }` : '';
-        code =
-          code.slice(0, devKey.keyStart) +
-          devReplacement +
-          code.slice(block.end);
-        if (!devReplacement) code = code.replace(/,(\s*[,)\]\n])/, '$1');
+        if (rest.length) {
+          // dev 还有其它字段：保留 dev 块、仅去掉 port
+          code = `${code.slice(0, devKey.keyStart)}dev: { ${rest.join(', ')} }${code.slice(block.end)}`;
+        } else {
+          // dev 仅有 port → 整块移除，并**按位置**吞掉紧邻的一个逗号（优先块后、否则块前），
+          // 避免留下悬挂逗号导致 config 解析失败（不能用全局正则，会误删别处的 ,\n）
+          let s = devKey.keyStart;
+          let e = block.end;
+          const dm = maskCommentsAndStrings(code);
+          let k = e;
+          while (k < dm.length && /[ \t]/.test(dm[k])) k += 1;
+          if (dm[k] === ',') {
+            e = k + 1;
+          } else {
+            let p = s - 1;
+            while (p >= 0 && /\s/.test(dm[p])) p -= 1;
+            if (dm[p] === ',') s = p;
+          }
+          code = code.slice(0, s) + code.slice(e);
+        }
         // 重新 mask + 定位配置对象，注入到**顶层** server（注释/嵌套 server 不算）
         const masked2 = maskCommentsAndStrings(code);
         const objStart2 = locateConfigObjStart(code, masked2);
