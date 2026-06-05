@@ -65,9 +65,11 @@ function main() {
       const status =
         f.enabled === true
           ? '已启用'
-          : f.enabled === 'unknown'
-            ? '状态需人工确认'
-            : '未启用';
+          : f.enabled === 'partial'
+            ? '部分（骨架就绪，CSS/语义接入待完成）'
+            : f.enabled === 'unknown'
+              ? '状态需人工确认'
+              : '未启用';
       const how =
         f.tier === 'auto'
           ? `enable.mjs ${f.key}`

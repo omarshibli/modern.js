@@ -726,6 +726,21 @@ function hasTailwindConfig(dir) {
   ].some(f => exists(dir, f));
 }
 
+// src 下是否有文件 import 了 tailwind.css（接入完成的标志；未接入则 tailwind 只是「骨架/部分」）
+function tailwindCssWired(dir) {
+  const src = path.join(dir, 'src');
+  const walk = d => {
+    if (!fs.existsSync(d)) return [];
+    return fs.readdirSync(d, { withFileTypes: true }).flatMap(e => {
+      const p = path.join(d, e.name);
+      return e.isDirectory() ? walk(p) : [p];
+    });
+  };
+  return walk(src).some(
+    f => /\.(ts|tsx|js|jsx)$/.test(f) && /tailwind\.css/.test(readText(f)),
+  );
+}
+
 // 功能「是否已启用」探测（只读）。返回 true | false | 'unknown'
 export function featureEnabled(key, dir) {
   const configFile = findConfigFile(dir);
@@ -756,7 +771,10 @@ export function featureEnabled(key, dir) {
         ) && Boolean(deps['styled-components'])
       );
     case 'tailwindcss':
-      return Boolean(deps.tailwindcss) && hasTailwindConfig(dir);
+      // 装了 tailwindcss + 有 config 才算「骨架就绪」；只有 CSS 也被 import 接入了才算完整启用，
+      // 否则返回 'partial'（骨架已生成、CSS 接入待确认）——不误报「已启用」。
+      if (!(Boolean(deps.tailwindcss) && hasTailwindConfig(dir))) return false;
+      return tailwindCssWired(dir) ? true : 'partial';
     case 'server':
       return (
         exists(dir, 'server', 'modern.server.ts') ||

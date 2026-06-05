@@ -731,9 +731,28 @@ try {
       tw.has('postcss.config.cjs') &&
       /@tailwind base/.test(tw.read('src/tailwind.css')),
   );
+  // 关键：CSS 自动接入根布局，用正确相对路径 `../tailwind.css`（不是会 build 失败的 './tailwind.css'）
   check(
-    'tailwindcss: 收尾（import css / v4 分支）进 manual',
-    /Tailwind 收尾/.test(tw.report().manual.join('\n')),
+    "tailwindcss: 自动 import '../tailwind.css' 进 src/routes/layout（路径正确、可 build）",
+    /import\s*['"]\.\.\/tailwind\.css['"]/.test(
+      tw.read('src/routes/layout.tsx'),
+    ),
+  );
+  check(
+    'tailwindcss: v4 分支说明进 manual',
+    /Tailwind v4/.test(tw.report().manual.join('\n')),
+  );
+  // 接入后 scan 视为已启用；未接入（无 layout 自动接入路径）则应是 partial 而非已启用
+  const twScan = execFileSync(
+    'node',
+    [path.join(SCRIPTS, 'scan.mjs'), tw.work],
+    {
+      encoding: 'utf8',
+    },
+  );
+  check(
+    'tailwindcss: CSS 已接入 → scan 已启用（接入前为 partial 而非误报已启用）',
+    /tailwindcss（.*）：已启用/.test(twScan),
   );
 
   // ===== D6. microFrontend：不自动化 → 可执行 checklist + 原因，不改文件 =====
@@ -900,6 +919,26 @@ try {
   check(
     'scan: 补 peer 后 → 已启用',
     /styled-components（.*）：已启用/.test(shScan2),
+  );
+
+  // ===== D12. BFF：已有 `export async function get` 也要复用（不只 export const get）=====
+  console.log(
+    '== D12. bff e2e: existing `export async function get` reused ==',
+  );
+  const fg = prepare('v3-app-bff-fn-get');
+  execFileSync('node', [path.join(SCRIPTS, 'enable.mjs'), 'bff', fg.work], {
+    encoding: 'utf8',
+  });
+  check(
+    '函数声明 export async function get 被复用（未新建 bff-demo.ts）',
+    /fn-get api response/.test(fg.read('api/lambda/hello.ts')) &&
+      !fg.has('api/lambda/bff-demo.ts'),
+  );
+  check(
+    '默认首页接入复用的 @api/hello（import { get as hello }）',
+    /import\s*\{\s*get as hello\s*\}\s*from\s*['"]@api\/hello['"]/.test(
+      fg.read('src/routes/page.tsx'),
+    ),
   );
 
   console.log(`\n结果：${pass} 通过 / ${fail} 失败`);

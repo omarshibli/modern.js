@@ -329,7 +329,13 @@ export default function Page() {
 // 探测/创建真实 BFF api 函数，返回 { importPath, fn }（fn 为导出名或 'default'）。已有文件一律不覆盖。
 function ensureBffApi(dir) {
   const lambdaDir = path.join(dir, 'api', 'lambda');
-  const reGet = /export\s+const\s+get\b/;
+  // BFF GET 函数可写成 `export const get` / `export function get` / `export async function get`，
+  // 名字大小写都按 GET 方法解析（get/Get/GET）。捕获实际导出名用于 import { <name> as hello }。
+  const reGet = /export\s+(?:async\s+)?(?:function\s+|const\s+)(get|Get|GET)\b/;
+  const matchGet = code => {
+    const m = code.match(reGet);
+    return m ? m[1] : null;
+  };
   const reDefault = /export\s+default\b/;
   if (fs.existsSync(lambdaDir)) {
     const walk = d =>
@@ -350,21 +356,23 @@ function ensureBffApi(dir) {
         .join('/');
       return `@api/${rel}`;
     };
-    // 优先复用 hello.* 的 get，其次任一 get，再次任一 default
+    // 优先复用 hello.* 的 GET 函数（const/function/async function、大小写），其次任一 GET，再次任一 default
     const hello = files.find(f =>
       /(^|\/)hello\.[tj]sx?$/.test(f.replace(/\\/g, '/')),
     );
-    if (hello && reGet.test(readText(hello))) {
-      note(manual, '复用已有 api/lambda/hello（export get），未覆盖');
-      return { importPath: relImport(hello), fn: 'get' };
+    const helloFn = hello ? matchGet(readText(hello)) : null;
+    if (hello && helloFn) {
+      note(manual, `复用已有 api/lambda/hello（export ${helloFn}），未覆盖`);
+      return { importPath: relImport(hello), fn: helloFn };
     }
-    const anyGet = files.find(f => reGet.test(readText(f)));
+    const anyGet = files.find(f => matchGet(readText(f)));
     if (anyGet) {
+      const fn = matchGet(readText(anyGet));
       note(
         manual,
-        `复用已有 BFF 函数 ${path.relative(lambdaDir, anyGet)}（export get），未覆盖`,
+        `复用已有 BFF 函数 ${path.relative(lambdaDir, anyGet)}（export ${fn}），未覆盖`,
       );
-      return { importPath: relImport(anyGet), fn: 'get' };
+      return { importPath: relImport(anyGet), fn };
     }
     const anyDefault = files.find(f => reDefault.test(readText(f)));
     if (anyDefault) {
@@ -528,9 +536,31 @@ function enableTailwind(dir) {
     );
     note(changed, '生成 src/tailwind.css（@tailwind 指令）');
   }
+  // 真正接入：把 src/tailwind.css **自动 import 进根布局**（约定式路由的全局入口），用正确相对路径 `../tailwind.css`
+  // （src/routes/layout 在 src/routes/ 下 → `../tailwind.css`），保证可 build；无 layout 才退回精确人工提示。
+  const layout = ['src/routes/layout.tsx', 'src/routes/layout.jsx']
+    .map(f => path.join(dir, f))
+    .find(fs.existsSync);
+  if (layout) {
+    const lc = readText(layout);
+    if (/tailwind\.css/.test(lc)) {
+      note(manual, 'src/routes/layout 已 import tailwind.css：未重复（幂等）');
+    } else {
+      fs.writeFileSync(layout, `import '../tailwind.css';\n${lc}`);
+      note(
+        changed,
+        "src/routes/layout 顶部 import '../tailwind.css'（全局接入 Tailwind，相对路径正确、可 build）",
+      );
+    }
+  } else {
+    note(
+      manual,
+      "未找到 src/routes/layout.*：请在你的根入口 import tailwind.css，相对路径按所在文件——src 根入口（如 src/entry.tsx）用 './tailwind.css'，src/routes/* 下的文件用 '../tailwind.css'（不要直接写 './tailwind.css' 在 routes 下，会解析到 src/routes/tailwind.css 导致 build 失败）",
+    );
+  }
   note(
     manual,
-    "Tailwind 收尾（人工/语义）：在入口或页面 import './tailwind.css'（或给现有全局 CSS 加 @tailwind 指令）；若用 Tailwind v4，改用 @tailwindcss/postcss + 在 CSS 写 @import 'tailwindcss'（见 guides/basic-features/css/tailwindcss.mdx 链接的 Rsbuild 文档）",
+    "如需 Tailwind v4：改用 @tailwindcss/postcss + 在 CSS 写 @import 'tailwindcss'（见 guides/basic-features/css/tailwindcss.mdx 链接的 Rsbuild 文档）",
   );
 }
 
