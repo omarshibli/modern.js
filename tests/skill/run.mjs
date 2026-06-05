@@ -604,8 +604,12 @@ try {
   );
   const rcfCfg = rcf.read('modern.config.ts');
   check(
-    '冲突时 runtime 块保留在 config（未误删）',
-    /\bruntime\s*:/.test(rcfCfg),
+    '冲突时 runtime 仍从 config 移除（v3 不接受顶层 runtime，否则 build TS2353 失败）',
+    !/\bruntime\s*:/.test(rcfCfg.replace(/(['"`])(?:\\.|(?!\1).)*\1/g, '""')),
+  );
+  check(
+    '冲突时原 runtime 作为注释追加到 modern.runtime.ts（待人工合并，未覆盖 existingPlugin）',
+    /原 modern\.config 顶层 runtime/.test(rcf.read('src/modern.runtime.ts')),
   );
   check(
     'appTools({ bundler }) 仍被去掉（安全改写照常）',
@@ -1176,6 +1180,11 @@ try {
     /\brspack\(/.test(cmpMasked) &&
       /\bbundlerChain\(/.test(cmpMasked) &&
       !/\bwebpack\(|webpackChain\(/.test(cmpMasked),
+  );
+  check(
+    '[config] 顶层 runtime 从 config 移除（v3 TS2353）+ 非空 modern.runtime.ts 时注释待人工合并',
+    !/\bruntime\s*:/.test(cmpMasked) &&
+      /原 modern\.config 顶层 runtime/.test(cmp.read('src/modern.runtime.ts')),
   );
   check(
     '[config] source 废弃字段移除、dev 块移除、无悬挂逗号',

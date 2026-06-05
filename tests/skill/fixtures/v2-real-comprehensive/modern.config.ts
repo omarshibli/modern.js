@@ -19,6 +19,12 @@ export default defineConfig({
     disableMinimize: false,
     enableInlineStyles: false,
   },
+  runtime: {
+    router: {
+      supportHtml5History: true,
+    },
+    state: true,
+  },
   source: {
     resolveMainFields: ['browser', 'module', 'main'],
     moduleScopes: [],

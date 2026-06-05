@@ -1382,14 +1382,16 @@ function migrateRuntimeBlock(dir) {
   }
   const merged = mergeIntoRuntime(dir, rtValue);
   if (merged === 'conflict') {
+    // v3 config 类型不接受顶层 runtime（留在 config 会 TS2353 build fail）。已存在非空
+    // modern.runtime.ts 无法安全自动合并 → 把原 runtime 作为注释参考追加到 modern.runtime.ts，
+    // 进 manual 待人工合并，但**仍从 config 移除**以保证可 build。
+    appendRuntimeReference(dir, rtValue);
     note(
       manual,
-      '已存在非空 src/modern.runtime.ts：modern.config 的 runtime 需人工合并（暂保留在 config，见 references/migrate-entry.md）',
+      'src/modern.runtime.ts 已存在非空配置：已从 modern.config 移除顶层 runtime（v3 不接受），原 runtime 作为注释追加到 modern.runtime.ts 末尾，请人工合并（见 references/migrate-entry.md）',
     );
-    if (touched) fs.writeFileSync(file, code);
-    return;
   }
-  // 合并成功才从 config 移除 runtime 块
+  // 从 config 移除 runtime 块（merged 与 conflict 都执行——v3 一律不能留 runtime 在 config）
   const restProps = props.filter((_, i) => i !== rtIdx);
   const newObj = restProps.length
     ? `{\n  ${restProps.join(',\n  ')},\n}`
@@ -1398,7 +1400,28 @@ function migrateRuntimeBlock(dir) {
   fs.writeFileSync(file, code);
   note(
     changed,
-    `modern.config 的 runtime 块 → src/modern.runtime.ts（${merged === 'created' ? '新建' : '合并进空配置'}）`,
+    merged === 'conflict'
+      ? 'modern.config 顶层 runtime 块已移除（v3 不接受；内容已注释进 modern.runtime.ts 待人工合并）'
+      : `modern.config 的 runtime 块 → src/modern.runtime.ts（${merged === 'created' ? '新建' : '合并进空配置'}）`,
+  );
+}
+
+// 把 config 顶层 runtime（无法安全自动合并的情况）作为注释参考追加到已存在的 modern.runtime.*，
+// 供人工合并。原值作注释，避免 build 时生效或语法冲突。
+function appendRuntimeReference(dir, rtValue) {
+  const rtFile = [
+    'modern.runtime.ts',
+    'modern.runtime.js',
+    'modern.runtime.tsx',
+    'modern.runtime.jsx',
+  ]
+    .map(f => path.join(dir, 'src', f))
+    .find(fs.existsSync);
+  if (!rtFile) return;
+  const safe = rtValue.replace(/\*\//g, '* /');
+  fs.appendFileSync(
+    rtFile,
+    `\n// TODO(v3 迁移)：以下为原 modern.config 顶层 runtime，需人工合并进上方 defineRuntimeConfig：\n/*\nruntime: ${safe}\n*/\n`,
   );
 }
 
