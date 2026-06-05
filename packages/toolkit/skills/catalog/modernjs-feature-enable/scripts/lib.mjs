@@ -747,10 +747,13 @@ export function featureEnabled(key, dir) {
         hasOutputSsg(configText)
       );
     case 'styled-components':
-      return isPluginEnabled(
-        configText,
-        '@modern-js/plugin-styled-components',
-        'styledComponentsPlugin',
+      // 插件 + peer（styled-components 库）都在才算完整启用；缺 peer 运行时缺库、不算
+      return (
+        isPluginEnabled(
+          configText,
+          '@modern-js/plugin-styled-components',
+          'styledComponentsPlugin',
+        ) && Boolean(deps['styled-components'])
       );
     case 'tailwindcss':
       return Boolean(deps.tailwindcss) && hasTailwindConfig(dir);

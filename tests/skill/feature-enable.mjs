@@ -746,8 +746,8 @@ try {
   );
   const mfReport = JSON.parse(mfOut);
   check(
-    'microFrontend: tier=manual-decision、changed 为空（未改文件）',
-    mfReport.tier === 'manual-decision' && mfReport.changed.length === 0,
+    'microFrontend: tier=manual、changed 为空（未改文件）',
+    mfReport.tier === 'manual' && mfReport.changed.length === 0,
   );
   check(
     'microFrontend: 输出原因 + 可执行 checklist（非 unsupported）',
@@ -757,6 +757,103 @@ try {
   check(
     'microFrontend: 未改写 modern.config / package.json',
     !/garfish|masterApp/.test(mf.read('modern.config.ts')),
+  );
+
+  // ===== D7. BFF：已有 api/lambda/index.ts → import @api/index（不是裸 @api，alias 才解析得到）=====
+  console.log('== D7. bff e2e: existing index.ts → @api/index import ==');
+  const ix = prepare('v3-app-bff-index-api');
+  execFileSync('node', [path.join(SCRIPTS, 'enable.mjs'), 'bff', ix.work], {
+    encoding: 'utf8',
+  });
+  const ixPage = ix.read('src/routes/page.tsx');
+  check(
+    'index.ts 复用且 import 用 @api/index（非裸 @api）',
+    /from\s*['"]@api\/index['"]/.test(ixPage) &&
+      !/from\s*['"]@api['"]/.test(ixPage),
+  );
+  check(
+    'index.ts 未被覆盖（仍是用户内容）',
+    /index api response/.test(ix.read('api/lambda/index.ts')),
+  );
+
+  // ===== D8. BFF 页面：自定义业务首页（非 generator 模板）不被覆盖 → 走 bff-demo =====
+  console.log('== D8. bff e2e: custom welcome homepage NOT overwritten ==');
+  const cw = prepare('v3-app-custom-welcome');
+  execFileSync('node', [path.join(SCRIPTS, 'enable.mjs'), 'bff', cw.work], {
+    encoding: 'utf8',
+  });
+  check(
+    '自定义 welcome 首页未被覆盖（Welcome to my app 仍在、无 @api 注入）',
+    /Welcome to my app/.test(cw.read('src/routes/page.tsx')) &&
+      !/@api\//.test(cw.read('src/routes/page.tsx')),
+  );
+  check(
+    '改走 src/routes/bff-demo/page.tsx（含 @api/hello 调用）',
+    cw.has('src/routes/bff-demo/page.tsx') &&
+      /@api\/hello/.test(cw.read('src/routes/bff-demo/page.tsx')),
+  );
+
+  // ===== D9. styled-components：补 peer styled-components；缺 peer 不算完整启用 =====
+  console.log('== D9. styled-components peer + completeness ==');
+  const scp = prepare('v3-app-no-bff');
+  execFileSync(
+    'node',
+    [path.join(SCRIPTS, 'enable.mjs'), 'styled-components', scp.work],
+    { encoding: 'utf8' },
+  );
+  const scpPkg = JSON.parse(scp.read('package.json'));
+  check(
+    'styled-components: 补装 peer styled-components 到 dependencies',
+    Boolean(scpPkg.dependencies['styled-components']),
+  );
+  // scan：缺 peer 时不算完整启用（删掉 peer 再扫）
+  const scpNoPeer = prepare('v3-app-no-bff');
+  execFileSync(
+    'node',
+    [path.join(SCRIPTS, 'enable.mjs'), 'styled-components', scpNoPeer.work],
+    { encoding: 'utf8' },
+  );
+  const noPeerPkgPath = path.join(scpNoPeer.work, 'package.json');
+  const noPeerPkg = JSON.parse(scpNoPeer.read('package.json'));
+  delete noPeerPkg.dependencies['styled-components'];
+  fs.writeFileSync(noPeerPkgPath, `${JSON.stringify(noPeerPkg, null, 2)}\n`);
+  const noPeerScan = execFileSync(
+    'node',
+    [path.join(SCRIPTS, 'scan.mjs'), scpNoPeer.work],
+    { encoding: 'utf8' },
+  );
+  check(
+    'scan: 缺 styled-components peer → 不标已启用',
+    /styled-components（.*）：未启用/.test(noPeerScan),
+  );
+
+  // ===== D10. scaffold tier（tailwind/server）：依赖进 changed、report.tier=scaffold（非完整 auto）=====
+  console.log('== D10. scaffold tier + deps in changed ==');
+  const tw2 = prepare('v3-app-no-bff');
+  const tw2Out = execFileSync(
+    'node',
+    [path.join(SCRIPTS, 'enable.mjs'), 'tailwindcss', tw2.work, '--json'],
+    { encoding: 'utf8' },
+  );
+  const tw2Report = JSON.parse(tw2Out);
+  check(
+    'tailwindcss: 依赖改动进 changed（tailwindcss/postcss/autoprefixer）',
+    tw2Report.changed.some(c => /tailwindcss@/.test(c)) &&
+      tw2Report.changed.some(c => /autoprefixer@/.test(c)),
+  );
+  check(
+    'tailwindcss: report.tier=scaffold、complete=false（非完整 auto 启用）',
+    tw2Report.tier === 'scaffold' && tw2Report.complete === false,
+  );
+  const sv2 = prepare('v3-app-no-bff');
+  const sv2Out = execFileSync(
+    'node',
+    [path.join(SCRIPTS, 'enable.mjs'), 'server', sv2.work, '--json'],
+    { encoding: 'utf8' },
+  );
+  check(
+    'server: report.tier=scaffold（非 auto）',
+    JSON.parse(sv2Out).tier === 'scaffold',
   );
 
   console.log(`\n结果：${pass} 通过 / ${fail} 失败`);

@@ -9,6 +9,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import {
   DEPRECATED,
+  FEATURE_CATALOG,
   REUSABLE_PROTO,
   appendToPluginsArray,
   classifyProject,
@@ -267,7 +268,7 @@ function patchTsconfig(dir) {
   }
 }
 
-// 通用：加一个非 @modern-js 依赖（如 tailwindcss）到 devDependencies，幂等
+// 通用：加一个非 @modern-js 依赖（如 tailwindcss / styled-components 的 peer），幂等。新增即记 changed。
 function addDep(dir, name, version, dev = true) {
   const file = path.join(dir, 'package.json');
   const pkg = JSON.parse(readText(file));
@@ -276,6 +277,7 @@ function addDep(dir, name, version, dev = true) {
   pkg[field] = pkg[field] || {};
   pkg[field][name] = version;
   fs.writeFileSync(file, `${JSON.stringify(pkg, null, 2)}\n`);
+  note(changed, `依赖：添加 ${name}@${version}`);
   return true;
 }
 
@@ -300,7 +302,9 @@ function ensureTsconfigInclude(dir, entry) {
 
 // 4) BFF 端到端示例：真实 api 函数（export const get）+ 前端页面调用（依据 bff/function.mdx）
 const BFF_API_HELLO = "export const get = async () => 'Hello Modern.js';\n";
-const DEFAULT_PAGE_MARKERS = /Get started by editing|Welcome to|container-box/;
+// 仅 Modern.js generator 默认模板首页才可安全替换：用其签名短语「Get started by editing」判定
+// （自定义的 "Welcome to my app" 等不应命中——否则会覆盖用户首页；不确定就走 bff-demo 路由）。
+const DEFAULT_PAGE_MARKERS = /Get started by editing/;
 
 function bffExamplePage(importPath, fn) {
   const imp =
@@ -336,13 +340,15 @@ function ensureBffApi(dir) {
     const files = walk(lambdaDir).filter(
       f => /\.(ts|tsx|js|jsx)$/.test(f) && !f.endsWith('.d.ts'),
     );
+    // 注意：tsconfig alias 是 `@api/*` → `./api/lambda/*`，**裸 `@api` 不匹配该模式**。
+    // 因此 index.* 也要用显式 `@api/index`（不能裁成 `@api`），否则 import 解析不到。
     const relImport = f => {
       const rel = path
         .relative(lambdaDir, f)
         .replace(/\.(ts|tsx|js|jsx)$/, '')
         .split(path.sep)
         .join('/');
-      return `@api/${rel}`.replace(/\/index$/, '');
+      return `@api/${rel}`;
     };
     // 优先复用 hello.* 的 get，其次任一 get，再次任一 default
     const hello = files.find(f =>
@@ -469,6 +475,8 @@ function enableStyledComponents(dir) {
     return;
   }
   addModernDep(dir, '@modern-js/plugin-styled-components');
+  // 插件的 peer 是 styled-components（^5.3.1）；不装 peer 则运行时缺库、build/use 失败 → 必须补
+  addDep(dir, 'styled-components', '^5.3.1', false);
   addPluginToConfig(dir, {
     importPkg: '@modern-js/plugin-styled-components',
     pluginName: 'styledComponentsPlugin',
@@ -650,11 +658,14 @@ function main() {
     plan.checklist.forEach((c, i) => note(manual, `  [${i + 1}] ${c}`));
   }
 
+  const catalogTier = (FEATURE_CATALOG.find(f => f.key === feature) || {}).tier;
   const report = {
     projectDir: dir,
     feature,
     featureLabel: label,
-    tier: FEATURES[feature] ? 'executable' : 'manual-decision',
+    // tier 来自能力矩阵：auto（完整启用）/ scaffold（骨架已生成 + 语义待人工，非完整）/ manual（仅 checklist）
+    tier: catalogTier || (FEATURES[feature] ? 'auto' : 'manual'),
+    complete: catalogTier === 'auto',
     changed,
     manual,
     deprecated: DEPRECATED,
