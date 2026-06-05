@@ -38,6 +38,8 @@ node scripts/scan-project.mjs <projectDir>
 
 > **monorepo / workspace 项目**：`@modern-js/app-tools` 用 `workspace:*` / `link:` / `catalog:` 等协议时无法从版本号判定大版本。此时只有命中**v2-only 结构信号**（顶层 `runtime`、`appTools({ bundler })`、`applyBaseConfig`、`@modern-js/plugin-tailwindcss`、`@modern-js/runtime/bff|server` import、`App.config/init`、`src/pages`、自定义 `server/index`）才判为 v2；**无任何信号则视为 ambiguous 并阻断**（非 0 退出、不写 context），避免把已是 v3 的 workspace 应用误迁。`routes` / `src/modern.runtime.ts` / `appTools()` 不算 v2 信号（v3 也有）。
 
+> **约定式路由红线**：`entryType=routes` 时，`src/routes/page.*` 和 `src/routes/layout.*` 是 v3 标准结构，必须保留。不要把 `page.tsx` 改名为 `index.tsx`，不要把 `layout.tsx` 挪到 `legacy-*`，不要凭空生成 `src/entry.*` 或 `src/legacy-app` / `src/legacy-routes`。如需处理 `routes/layout` 的 `config/init` 导出，只迁运行时配置逻辑，不改路由文件命名。
+
 ### 步骤 2：执行可安全自动化的改写
 
 ```bash
@@ -55,7 +57,8 @@ node scripts/migrate.mjs <projectDir>
 - **配置**：`appTools({ bundler })`→`appTools()`（v3 默认 Rspack，只删 `bundler` 参数）；`modern.config` 顶层 `runtime` 块 → 合并进 `src/modern.runtime.ts`（v3 不再支持在 config 配 runtime；只合并进**空的** `defineRuntimeConfig({})`，非空/函数式进人工清单不覆盖）；`dev.port`→`server.port`（只移顶层 `port`，保留 dev 块其余字段；嵌套如 `dev.client.port` 不动）；移除 tailwind 插件并写 `postcss.config.cjs`
 - **入口**：`src/index.*`→`src/entry.*`（bootstrap 函数改写为 `createRoot()`/`render()`）；`App.config` 抽取到 `src/modern.runtime.ts`（**已存在则不覆盖**，进人工清单）
 - **运行时**：`useRuntimeContext()` → React 19+ 用 `use(RuntimeContext)`、<19 用 `useContext(RuntimeContext)`（保留 react default/namespace import；`useRuntimeContext as 别名` 进人工清单不假改写）
-- **路由**：`src/pages`→`src/routes`（无 routes 时），并改写相对 import 引用，残留进人工清单
+- **路由**：`src/pages`→`src/routes`（无 routes 时），并按 v3 约定把 `pages/index.*` 映射为 `routes/page.*`、`pages/foo/index.*` 映射为 `routes/foo/page.*`，同步改写相对 import 引用，残留进人工清单；迁移产物中禁止出现 `routes/**/index.*` 作为页面文件
+- **脚本**：删除 `package.json` 中调用 `modern new` / `modern upgrade` 的 scripts（v3 已移除这两个命令）
 
 > **`applyBaseConfig(...)` 包装的配置**（仓库 integration 测试 helper / 非标准用户配置）：`runtime` / `plugins` / `dev.port` / `appTools bundler` 等**结构性迁移一律进人工清单**（报告标注「结构迁移未完成」），只做依赖升级 / import 路径 / tailwind 移除等文件级安全改写，不在包装内半自动改坏配置。`package.json` 的 `modernConfig.runtime` 同样进人工清单。
 

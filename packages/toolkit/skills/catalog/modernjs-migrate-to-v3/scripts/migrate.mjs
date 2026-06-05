@@ -10,7 +10,7 @@
 //   - 入口：src/index.* → src/entry.*（bootstrap 函数改写为 createRoot/render）
 //   - App.config → src/modern.runtime.ts 的 defineRuntimeConfig
 //   - useRuntimeContext() → use/useContext(RuntimeContext)（保留 react default import；alias 进人工）
-//   - src/pages → src/routes（无 routes 时）
+//   - src/pages → src/routes（无 routes 时，index.* 映射为 page.*）
 // 人工清单（语义复杂，不自动）：App.init / layout init、自定义 server、html.appIcon、
 //   server.ssr.mode、webpack 自定义配置、modernConfig.runtime、非空/函数式 runtime、
 //   applyBaseConfig(...) 包装下的结构性迁移（integration helper，标注「结构迁移未完成」）。
@@ -20,6 +20,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 
 const SRC_EXT = new Set(['.ts', '.tsx', '.js', '.jsx', '.mjs', '.cjs']);
+const ENTRY_EXTS = ['tsx', 'jsx', 'ts', 'js'];
 const IGNORED = new Set([
   'node_modules',
   '.git',
@@ -35,6 +36,104 @@ const note = (list, msg) => list.push(msg);
 
 const readText = f => fs.readFileSync(f, 'utf8');
 const exists = (...p) => fs.existsSync(path.join(...p));
+
+function firstExistingFile(dir, basename) {
+  return ENTRY_EXTS.map(ext => path.join(dir, `${basename}.${ext}`)).find(
+    fs.existsSync,
+  );
+}
+
+function listExistingFiles(dir, basename) {
+  return ENTRY_EXTS.map(ext => path.join(dir, `${basename}.${ext}`)).filter(
+    fs.existsSync,
+  );
+}
+
+function detectEntryType(dir) {
+  const src = path.join(dir, 'src');
+  if (exists(src, 'routes')) return 'routes';
+  if (exists(src, 'App.tsx') || exists(src, 'App.jsx')) return 'app';
+  if (firstExistingFile(src, 'index')) return 'custom-index';
+  if (exists(src, 'pages')) return 'pages';
+  return 'unknown';
+}
+
+function collectRouteIndexFiles(src) {
+  const routes = path.join(src, 'routes');
+  const out = [];
+  const walk = dir => {
+    if (!fs.existsSync(dir)) return;
+    for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
+      const full = path.join(dir, e.name);
+      if (e.isDirectory()) walk(full);
+      else if (/^index\.(tsx|jsx|ts|js)$/.test(e.name)) out.push(full);
+    }
+  };
+  walk(routes);
+  return out;
+}
+
+function createRoutesGuard(dir, entryType) {
+  if (entryType !== 'routes') return null;
+  const src = path.join(dir, 'src');
+  const routes = path.join(src, 'routes');
+  return {
+    hadRootPage: Boolean(firstExistingFile(routes, 'page')),
+    hadRootLayout: Boolean(firstExistingFile(routes, 'layout')),
+    entryFilesBefore: new Set(listExistingFiles(src, 'entry')),
+  };
+}
+
+function routeConventionErrors(dir, guard = null) {
+  const src = path.join(dir, 'src');
+  const routes = path.join(src, 'routes');
+  if (!fs.existsSync(routes)) return [];
+  const rel = file => path.relative(dir, file);
+  const errors = [];
+  const indexFiles = collectRouteIndexFiles(src);
+  if (indexFiles.length) {
+    errors.push(
+      `v3 约定式路由不识别 routes/**/index.*，请改为 page.*：${indexFiles.map(rel).join(', ')}`,
+    );
+  }
+  if (guard?.hadRootPage && !firstExistingFile(routes, 'page')) {
+    errors.push('迁移前存在 src/routes/page.*，迁移后必须保留');
+  }
+  if (guard?.hadRootLayout && !firstExistingFile(routes, 'layout')) {
+    errors.push('迁移前存在 src/routes/layout.*，迁移后必须保留');
+  }
+  const generatedEntry = guard
+    ? listExistingFiles(src, 'entry').filter(
+        f => !guard.entryFilesBefore.has(f),
+      )
+    : [];
+  if (generatedEntry.length) {
+    errors.push(
+      `routes 入口模式禁止凭空生成自定义入口：${generatedEntry.map(rel).join(', ')}`,
+    );
+  }
+  const legacyDirs = ['legacy-app', 'legacy-routes']
+    .map(name => path.join(src, name))
+    .filter(fs.existsSync);
+  if (legacyDirs.length) {
+    errors.push(
+      `迁移脚本不允许生成 legacy-* 目录：${legacyDirs.map(rel).join(', ')}`,
+    );
+  }
+  return errors;
+}
+
+function assertRouteConventions(dir, guard = null) {
+  const errors = routeConventionErrors(dir, guard);
+  if (!errors.length) return;
+  throw new Error(
+    [
+      '⛔ 迁移已中止：检测到不符合 Modern.js v3 的约定式路由结构。',
+      ...errors.map(e => `- ${e}`),
+      '请按 guides/basic-features/routes/routes：使用 routes/page.tsx 作为页面组件，layout.tsx 作为布局组件。',
+    ].join('\n'),
+  );
+}
 
 function parseVersion(v) {
   const m = String(v ?? '').match(/(\d+)\.(\d+)\.(\d+)(?:-[0-9A-Za-z.-]+)?/);
@@ -478,6 +577,25 @@ function migrateDeps(dir, toVersion, opts = {}) {
       `workspace/link/catalog 协议依赖未改版本（随 monorepo 整体升级到 v3）：${[...skippedWorkspace].join(', ')}`,
     );
   }
+}
+
+function removeRemovedModernScripts(dir) {
+  const file = path.join(dir, 'package.json');
+  const pkg = JSON.parse(readText(file));
+  if (!pkg.scripts) return;
+  const removed = [];
+  for (const [name, command] of Object.entries(pkg.scripts)) {
+    if (/^modern\s+(?:new|upgrade)(?:\s|$)/.test(String(command).trim())) {
+      delete pkg.scripts[name];
+      removed.push(name);
+    }
+  }
+  if (!removed.length) return;
+  fs.writeFileSync(file, `${JSON.stringify(pkg, null, 2)}\n`);
+  note(
+    changed,
+    `package.json scripts：移除 v3 不再支持的 modern new/upgrade（${removed.join(', ')}）`,
+  );
 }
 
 // ---- 2) import 路径映射 ----
@@ -990,10 +1108,38 @@ function migrateRuntimeBlock(dir) {
 }
 
 // ---- 4) 入口：index→entry（含 bootstrap 改写）、App.config 抽取 ----
-function migrateEntry(dir) {
+function flagRoutesLayoutConfigInit(src) {
+  const layout = ['routes/layout.tsx', 'routes/layout.jsx']
+    .map(f => path.join(src, f))
+    .find(fs.existsSync);
+  if (layout && /export\s+const\s+(config|init)\b/.test(readText(layout))) {
+    note(
+      manual,
+      'routes/layout 的 config/init 导出：需迁到 modern.runtime.ts（见 references/migrate-entry.md）',
+    );
+  }
+}
+
+function migrateEntry(dir, entryType) {
   const src = path.join(dir, 'src');
+  if (entryType === 'routes') {
+    if (firstExistingFile(src, 'index')) {
+      note(
+        manual,
+        'routes 入口同时存在 src/index.*：未自动改为 entry.*，请人工确认是否仍需要自定义入口（见 references/migrate-entry.md）',
+      );
+    }
+    if (exists(src, 'App.tsx') || exists(src, 'App.jsx')) {
+      note(
+        manual,
+        'routes 入口同时存在 App.tsx/App.jsx：未自动抽取 App.config，请人工确认入口形态（见 references/migrate-entry.md）',
+      );
+    }
+    flagRoutesLayoutConfigInit(src);
+    return;
+  }
   // 4a. 自定义入口 index.* -> entry.*
-  for (const ext of ['tsx', 'jsx', 'ts', 'js']) {
+  for (const ext of ENTRY_EXTS) {
     const idx = path.join(src, `index.${ext}`);
     if (fs.existsSync(idx)) {
       let code = readText(idx);
@@ -1076,15 +1222,7 @@ function migrateEntry(dir) {
   }
 
   // 4c. routes/layout 的 config/init 导出 → 人工
-  const layout = ['routes/layout.tsx', 'routes/layout.jsx']
-    .map(f => path.join(src, f))
-    .find(fs.existsSync);
-  if (layout && /export\s+const\s+(config|init)\b/.test(readText(layout))) {
-    note(
-      manual,
-      'routes/layout 的 config/init 导出：需迁到 modern.runtime.ts（见 references/migrate-entry.md）',
-    );
-  }
+  flagRoutesLayoutConfigInit(src);
 }
 
 // ---- 5) useRuntimeContext → use(RuntimeContext) ----
@@ -1172,21 +1310,121 @@ function migrateRuntimeContext(files, reactMajor) {
 }
 
 // ---- 6) pages → routes ----
+function posixRel(from, to) {
+  return path.relative(from, to).split(path.sep).join('/');
+}
+
+function stripKnownExt(file) {
+  const ext = path.posix.extname(file);
+  return SRC_EXT.has(ext) ? file.slice(0, -ext.length) : file;
+}
+
+function pageFileTargetRel(rel) {
+  const parsed = path.posix.parse(rel);
+  if (!SRC_EXT.has(parsed.ext) || rel.endsWith('.d.ts')) return rel;
+  if (parsed.name === 'index') {
+    return path.posix.join(parsed.dir, `page${parsed.ext}`);
+  }
+  if (['page', 'layout'].includes(parsed.name) || parsed.name.startsWith('_')) {
+    return rel;
+  }
+  return path.posix.join(parsed.dir, parsed.name, `page${parsed.ext}`);
+}
+
+function collectFiles(dir, files = []) {
+  if (!fs.existsSync(dir)) return files;
+  for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
+    const full = path.join(dir, e.name);
+    if (e.isDirectory()) collectFiles(full, files);
+    else files.push(full);
+  }
+  return files;
+}
+
+function removeEmptyDirs(dir) {
+  if (!fs.existsSync(dir)) return;
+  for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
+    if (e.isDirectory()) removeEmptyDirs(path.join(dir, e.name));
+  }
+  if (fs.readdirSync(dir).length === 0) fs.rmdirSync(dir);
+}
+
+function addImportMove(moveMap, fromRel, toRel) {
+  moveMap.set(fromRel, toRel);
+  moveMap.set(stripKnownExt(fromRel), stripKnownExt(toRel));
+  const parsed = path.posix.parse(fromRel);
+  if (parsed.name === 'index') {
+    moveMap.set(parsed.dir, stripKnownExt(toRel));
+  }
+}
+
 function migratePagesToRoutes(dir) {
   const src = path.join(dir, 'src');
   if (exists(src, 'pages') && !exists(src, 'routes')) {
-    fs.renameSync(path.join(src, 'pages'), path.join(src, 'routes'));
-    note(changed, 'src/pages → src/routes（约定式路由）');
+    const routesDir = path.join(src, 'routes');
+    fs.renameSync(path.join(src, 'pages'), routesDir);
+    const moveMap = new Map();
+    const moves = collectFiles(routesDir)
+      .map(file => {
+        const fromRel = posixRel(routesDir, file);
+        const toRel = pageFileTargetRel(fromRel);
+        return {
+          from: file,
+          fromRel,
+          to: path.join(routesDir, ...toRel.split('/')),
+          toRel,
+        };
+      })
+      .filter(m => m.fromRel !== m.toRel);
+    const sources = new Set(moves.map(m => m.from));
+    const targets = new Map();
+    for (const m of moves) {
+      const existing = targets.get(m.to);
+      if (existing) {
+        throw new Error(
+          `pages→routes 迁移冲突：${existing} 与 ${m.fromRel} 都会映射到 ${m.toRel}，请人工合并`,
+        );
+      }
+      targets.set(m.to, m.fromRel);
+      if (fs.existsSync(m.to) && !sources.has(m.to)) {
+        throw new Error(
+          `pages→routes 迁移冲突：${m.fromRel} 与 ${m.toRel} 目标冲突，请人工合并`,
+        );
+      }
+      addImportMove(moveMap, m.fromRel, m.toRel);
+    }
+    const tmp = path.join(routesDir, `.modernjs-migrate-${Date.now()}`);
+    if (moves.length) fs.mkdirSync(tmp, { recursive: true });
+    for (let i = 0; i < moves.length; i += 1) {
+      fs.renameSync(moves[i].from, path.join(tmp, String(i)));
+    }
+    for (let i = 0; i < moves.length; i += 1) {
+      fs.mkdirSync(path.dirname(moves[i].to), { recursive: true });
+      fs.renameSync(path.join(tmp, String(i)), moves[i].to);
+    }
+    if (moves.length) {
+      fs.rmSync(tmp, { recursive: true, force: true });
+      removeEmptyDirs(routesDir);
+    }
+    note(
+      changed,
+      `src/pages → src/routes（约定式路由，index.* 映射为 page.*）`,
+    );
     // 更新相对引用 ../pages → ../routes；残留（别名等非相对）引用进人工清单
     let rewrote = 0;
     const residual = [];
     for (const f of collectSources(src)) {
-      const code = readText(f);
-      const updated = code.replace(
-        /(['"])((?:\.\.?\/)+)pages(\/[^'"]*)?\1/g,
-        (_, q, relPath, tail) => `${q}${relPath}routes${tail || ''}${q}`,
+      const { code: updated, changed: c } = mapImportSpecifiers(
+        readText(f),
+        spec => {
+          const m = spec.match(/^((?:\.\.?\/)+)pages(?:\/(.*))?$/);
+          if (!m) return null;
+          const tail = m[2] ?? '';
+          const mappedTail = moveMap.get(tail) ?? tail;
+          return `${m[1]}routes${mappedTail ? `/${mappedTail}` : ''}`;
+        },
       );
-      if (updated !== code) {
+      if (c) {
         fs.writeFileSync(f, updated);
         rewrote += 1;
       }
@@ -1379,6 +1617,9 @@ function main() {
   const pkg = JSON.parse(readText(path.join(dir, 'package.json')));
   const reactMajor =
     Number(String(pkg.dependencies?.react ?? '').match(/(\d+)/)?.[1]) || 0;
+  const entryType = detectEntryType(dir);
+  const routesGuard = createRoutesGuard(dir, entryType);
+  assertRouteConventions(dir, routesGuard);
 
   // 二次保护（不依赖 scan）：workspace/monorepo 协议 + 无任何 v2-only 信号 → ambiguous，
   // 可能已是 v3 workspace 应用，拒绝迁移、不改任何文件
@@ -1405,6 +1646,7 @@ function main() {
   migrateDeps(dir, toVersion, {
     keepTailwindDep: hasUnsafeTailwindUsage(dir),
   });
+  removeRemovedModernScripts(dir);
   const files = collectSources(path.join(dir, 'src'))
     .concat(collectSources(path.join(dir, 'server')))
     .concat(collectSources(path.join(dir, 'api')));
@@ -1415,7 +1657,7 @@ function main() {
   // 须在 migrateEntry 之前：若它新建/填充了 modern.runtime.ts，App.config 抽取会识别为已存在而走 merge/manual
   migrateRuntimeBlock(dir);
   addBffPlugin(dir, importFlags);
-  migrateEntry(dir);
+  migrateEntry(dir, entryType);
   // entry/runtime 改完后再扫一次最新文件做 runtime-context
   migrateRuntimeContext(
     collectSources(path.join(dir, 'src')).concat(
@@ -1424,6 +1666,7 @@ function main() {
     reactMajor,
   );
   migratePagesToRoutes(dir);
+  assertRouteConventions(dir, routesGuard);
   writePostcss(dir, hadTailwind);
   flagManual(dir, reactMajor);
 

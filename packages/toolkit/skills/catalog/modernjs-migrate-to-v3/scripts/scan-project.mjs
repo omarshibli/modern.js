@@ -35,6 +35,8 @@ const readText = file => {
   }
 };
 const exists = (...p) => fs.existsSync(path.join(...p));
+const hasAny = (dir, basename) =>
+  ['tsx', 'jsx', 'ts', 'js'].some(ext => exists(dir, `${basename}.${ext}`));
 
 // 把注释和字符串内容替换为等长空白（保留换行、引号、长度），用于结构/标识符信号匹配——
 // 普通字符串里的 runtime/appTools({bundler})/applyBaseConfig 不应被当作 v2 信号。
@@ -251,20 +253,26 @@ function main() {
       .map(rel);
 
   const src = path.join(projectDir, 'src');
+  const hasRoutesEntry = exists(src, 'routes');
+  const hasAppEntry = exists(src, 'App.tsx') || exists(src, 'App.jsx');
+  const hasCustomIndex = hasAny(src, 'index');
+  const hasCustomEntry = hasAny(src, 'entry');
   // 入口类型
-  const entryType = exists(src, 'routes')
+  const entryType = hasRoutesEntry
     ? 'routes'
-    : exists(src, 'App.tsx') || exists(src, 'App.jsx')
+    : hasAppEntry
       ? 'app'
-      : exists(src, 'index.tsx') || exists(src, 'index.jsx')
+      : hasCustomIndex
         ? 'custom-index'
-        : 'unknown';
+        : hasCustomEntry
+          ? 'custom-entry'
+          : 'unknown';
 
   const features = {
     // 路由
     'pages-to-routes': hasPagesDir(projectDir),
     // 入口
-    'custom-entry': entryType === 'custom-index',
+    'custom-entry': hasCustomIndex || hasCustomEntry,
     'app-config': grep(/\bApp\.config\b/),
     'app-init': grep(/\bApp\.init\b/),
     'layout-config-init': grep(/export\s+const\s+(config|init)\b/),

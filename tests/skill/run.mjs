@@ -139,6 +139,22 @@ try {
     '[auto] runtime 合并进已存在的空 defineRuntimeConfig({})',
     /defineRuntimeConfig\(\s*\{[\s\S]*router:\s*true/.test(gaRt),
   );
+  check(
+    '[routes] 标准约定式路由结构保留 page/layout',
+    ga.has('src/routes/page.tsx') && ga.has('src/routes/layout.tsx'),
+  );
+  check(
+    '[routes] 未生成错误 routes/index.tsx、entry.tsx 或 legacy-*',
+    !ga.has('src/routes/index.tsx') &&
+      !ga.has('src/entry.tsx') &&
+      !ga.has('src/legacy-app') &&
+      !ga.has('src/legacy-routes'),
+  );
+  check(
+    '[auto] 移除 v3 不支持的 modern new/upgrade scripts',
+    !JSON.parse(ga.read('package.json')).scripts.new &&
+      !JSON.parse(ga.read('package.json')).scripts.upgrade,
+  );
   const gaReport = ga.report();
   check(
     '[auto] report.changed 记录 runtime → modern.runtime.ts',
@@ -383,10 +399,24 @@ try {
   console.log('== C2. v2-edge-pages (pages + import ../pages) ==');
   const c = prepare('v2-edge-pages');
   check('src/pages → src/routes', c.has('src/routes') && !c.has('src/pages'));
+  check(
+    'pages/index.tsx → routes/page.tsx（v3 标准首页）',
+    c.has('src/routes/page.tsx') && !c.has('src/routes/index.tsx'),
+  );
+  check(
+    'pages/about/index.tsx → routes/about/page.tsx',
+    c.has('src/routes/about/page.tsx') && !c.has('src/routes/about/index.tsx'),
+  );
   const link = c.read('src/components/Link.tsx');
   check(
-    '引用 ../pages → ../routes',
-    link.includes('../routes/index') && !link.includes('../pages/index'),
+    '引用 ../pages/index → ../routes/page',
+    link.includes('../routes/page') && !link.includes('../pages/index'),
+  );
+  const aboutLink = c.read('src/components/AboutLink.tsx');
+  check(
+    '引用 ../pages/about/index → ../routes/about/page',
+    aboutLink.includes('../routes/about/page') &&
+      !aboutLink.includes('../pages/about/index'),
   );
   check(
     '无残留 pages 引用人工项',
@@ -992,6 +1022,33 @@ try {
   check(
     'require 用法进 manual',
     /dynamic import \/ require/.test(rq.report().manual.join('\n')),
+  );
+
+  // C30. blocker：routes/index.tsx 不是 v3 约定式路由页面，迁移前直接阻断且不落半成品
+  console.log('== C30. v2-edge-routes-index (invalid routes/index.tsx) ==');
+  const ri = prepare('v2-edge-routes-index', false);
+  const riPkgBefore = ri.read('package.json');
+  let routesIndexBlocked = false;
+  try {
+    execFileSync(
+      'node',
+      [path.join(SCRIPTS, 'migrate.mjs'), ri.work, '--to=3.0.0'],
+      {
+        encoding: 'utf8',
+        stdio: 'pipe',
+      },
+    );
+  } catch {
+    routesIndexBlocked = true;
+  }
+  check('[blocking] routes/index.tsx 预检阻断', routesIndexBlocked);
+  check(
+    '[blocking] routes/index.tsx 阻断时未改 package.json',
+    ri.read('package.json') === riPkgBefore,
+  );
+  check(
+    '[blocking] routes/index.tsx 阻断时未产生 report.json',
+    !ri.has('.agents/runs/modernjs-migrate/report.json'),
   );
 
   console.log(`\n结果：${pass} 通过 / ${fail} 失败`);
