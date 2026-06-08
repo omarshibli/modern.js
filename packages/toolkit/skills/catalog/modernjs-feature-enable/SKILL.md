@@ -46,10 +46,10 @@ node scripts/scan.mjs <projectDir>
 > **但**遇到以下情况**先不要带 `--install`**（只跑 enable，把 install 命令告诉用户）：工作区有**未提交的
 > lockfile 改动**、**离线/无法联网**、或包管理器不明确——因为 install 会改 lockfile、耗时、依赖网络。
 
-**BFF（自动化）**：
+**BFF（自动化）**（默认带 `--install` 一步到位；异常情况按上方执行纪律去掉 `--install`）：
 
 ```bash
-node scripts/enable.mjs bff <projectDir>
+node scripts/enable.mjs bff <projectDir> --install
 ```
 
 自动完成（依据 `components/enable-bff.mdx`）：
@@ -63,10 +63,10 @@ node scripts/enable.mjs bff <projectDir>
 
 **其它能力**：`styled-components`（插件，自动）、`tailwindcss`（Rsbuild 原生脚手架）、`server`（生成 `server/modern.server.ts` 骨架 + `@modern-js/server-runtime` + tsconfig include，业务语义人工）、`microFrontend`（输出可执行 checklist）。
 
-**SSG（自动化）**：
+**SSG（自动化）**（同样默认带 `--install`）：
 
 ```bash
-node scripts/enable.mjs ssg <projectDir>
+node scripts/enable.mjs ssg <projectDir> --install
 ```
 
 自动完成（依据 `components/enable-ssg.mdx`）：添加 `@modern-js/plugin-ssg`（同 app-tools 版本）、`plugins` 追加 `ssgPlugin()`、顶层 `output` 合并 `ssg: true`（已有 output 不覆盖其它字段）。详见 `references/enable-ssg.md`。
