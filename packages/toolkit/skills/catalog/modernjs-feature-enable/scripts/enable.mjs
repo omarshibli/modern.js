@@ -773,9 +773,11 @@ function main() {
   }
 
   // --install（显式触发才装；不无条件默认——install 改 lockfile/耗时/依赖网络）。
-  // 未带 --install 时不记 manual（install 命令已在末尾「下一步」提示里），保持自动迁移项干净。
+  // 幂等/重试：只要带 --install 就跑 install（install 本身幂等），不按「本次是否有 changed」门控——
+  // 否则「先 enable、后再 --install」或「上次 install 失败重试」时 enable 已幂等(changed=[]) 会装不上。
+  // manual-decision（microFrontend）不改依赖，跳过。未带 --install 时 install 命令在末尾「下一步」提示里。
   let install = null;
-  if (doInstall && changed.length) {
+  if (doInstall && !isManualDecision) {
     install = runInstall(dir);
     if (install.ok) {
       note(changed, `${install.note}，可直接 modern dev/build`);

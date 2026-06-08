@@ -1006,6 +1006,35 @@ try {
     /依赖安装失败/.test(infReport.manual.join('\n')) &&
       /styledComponentsPlugin\(\)/.test(inf.read('modern.config.ts')),
   );
+  // 重试/幂等：插件已启用(enable 此次幂等)，再跑 --install 仍会装（不被 changed=0 门控），失败仍非 0
+  let infRetryThrew = false;
+  let infRetryOut = '';
+  try {
+    infRetryOut = execFileSync(
+      'node',
+      [
+        path.join(SCRIPTS, 'enable.mjs'),
+        'styled-components',
+        inf.work,
+        '--install',
+        '--json',
+      ],
+      { encoding: 'utf8', stdio: 'pipe' },
+    );
+  } catch (e) {
+    infRetryThrew = true;
+    infRetryOut = e.stdout || '';
+  }
+  let infRetry = null;
+  try {
+    infRetry = JSON.parse(infRetryOut);
+  } catch {
+    infRetry = inf.report();
+  }
+  check(
+    '[install] 重试路径：enable 已幂等仍跑 --install（install 非 null）且失败仍非 0',
+    infRetryThrew && infRetry.install && infRetry.install.ok === false,
+  );
 
   console.log(`\n结果：${pass} 通过 / ${fail} 失败`);
   if (fail > 0) process.exit(1);
