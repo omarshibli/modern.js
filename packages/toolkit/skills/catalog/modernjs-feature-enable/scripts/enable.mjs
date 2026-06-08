@@ -676,8 +676,18 @@ const FEATURES = {
   server: { run: enableServer, label: '自定义 Web Server' },
 };
 
-// 按 lockfile 选包管理器（默认 pnpm）。--install 显式触发才装；不无条件默认（install 改 lockfile/耗时/依赖网络）。
+// 选包管理器：优先 package.json 的 `packageManager` 字段，其次 lockfile，默认 pnpm。
+// --install 显式触发才装；不无条件默认（install 改 lockfile/耗时/依赖网络）。
 function detectPackageManager(dir) {
+  try {
+    const pm = JSON.parse(
+      readText(path.join(dir, 'package.json')),
+    ).packageManager;
+    const name = String(pm || '').split('@')[0];
+    if (['pnpm', 'yarn', 'npm'].includes(name)) return name;
+  } catch {
+    /* 无 packageManager 字段 → 退回 lockfile 判断 */
+  }
   if (fs.existsSync(path.join(dir, 'pnpm-lock.yaml'))) return 'pnpm';
   if (fs.existsSync(path.join(dir, 'yarn.lock'))) return 'yarn';
   if (fs.existsSync(path.join(dir, 'package-lock.json'))) return 'npm';

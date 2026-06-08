@@ -38,8 +38,9 @@ node scripts/scan.mjs <projectDir>
 
 ### 步骤 2：启用功能
 
-> **执行纪律（重要）**：用户一旦明确「启用 X / enable X」，**立即直接运行** `node scripts/enable.mjs X <projectDir>`，
-> 不要只描述将要做什么、不要等二次确认、不要停在「我会执行…」就没动作。一条命令就改完源文件。
+> **执行纪律（重要）**：仅当用户**明确说「启用 X / enable X」且项目目录明确、scan 判定为 v3** 时，才
+> **立即直接运行** `node scripts/enable.mjs X <projectDir>`——不要只描述、不要等二次确认、不要停在「我会执行…」就没动作，一条命令改完源文件。
+> **反之**：用户只是问「为什么 / 能启用哪些 / 扫描一下 / 当前状态」时，**只跑 `scan.mjs` 给能力矩阵与报告，绝不改文件**。
 >
 > **一步到位（依赖自动安装）**：默认带 `--install`，启用完直接可 `modern dev/build`，不用用户再手动装依赖：
 > `node scripts/enable.mjs X <projectDir> --install`。
