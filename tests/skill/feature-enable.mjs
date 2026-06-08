@@ -793,6 +793,11 @@ try {
       mfReport.manual.some(m => /\[1\]/.test(m)),
   );
   check(
+    'microFrontend: 明确「未改任何文件 + 架构方案」、complete=false、不报启用成功',
+    /未改任何文件/.test(mfReport.manual.join('\n')) &&
+      mfReport.complete === false,
+  );
+  check(
     'microFrontend: 未改写 modern.config / package.json',
     !/garfish|masterApp/.test(mf.read('modern.config.ts')),
   );

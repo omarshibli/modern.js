@@ -759,11 +759,16 @@ function main() {
   }
 
   const label = FEATURES[feature]?.label || plan.label;
+  const isManualDecision = !FEATURES[feature];
   if (FEATURES[feature]) {
     FEATURES[feature].run(dir);
   } else {
-    // 需架构决策：输出可执行 checklist + 原因（不 unsupported、不静默假启用、不改文件）
-    note(manual, `${plan.label} 暂不自动化（需架构决策）：${plan.reason}`);
+    // 需架构决策：输出可执行 checklist + 原因（不 unsupported、不静默假启用、**未改任何文件**）
+    note(
+      manual,
+      `未改任何文件——${plan.label} 不是本 skill 的自动启用项，是架构方案，请按独立方案处理（见 references/other-features.md）`,
+    );
+    note(manual, `原因：${plan.reason}`);
     plan.checklist.forEach((c, i) => note(manual, `  [${i + 1}] ${c}`));
   }
 
@@ -806,6 +811,16 @@ function main() {
 
   if (json) {
     console.log(JSON.stringify(report, null, 2));
+    return;
+  }
+  if (isManualDecision) {
+    // 架构决策项：不报「启用成功」，明确未改文件 + 给 checklist
+    console.log(`📋 ${label}：架构决策项（**未改任何文件**）（${dir}）`);
+    console.log('\n需按独立架构方案处理，可执行 checklist：');
+    for (const m of manual) console.log(`  - ${m}`);
+    console.log(
+      '\n（本项不在 scan 的「可启用项」矩阵里；详见 references/other-features.md）',
+    );
     return;
   }
   console.log(`🔧 启用功能：${label}（${dir}）`);
