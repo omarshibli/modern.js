@@ -960,6 +960,48 @@ try {
     ),
   );
 
+  // ===== D13. --install 失败要诚实：非 0 退出 + report 给 stderr/补救命令，不报「一步到位完成」=====
+  console.log(
+    '== D13. --install honest failure (broken dep → non-zero + hint) ==',
+  );
+  const inf = prepare('v3-app-install-fail');
+  let infThrew = false;
+  let infOut = '';
+  try {
+    infOut = execFileSync(
+      'node',
+      [
+        path.join(SCRIPTS, 'enable.mjs'),
+        'styled-components',
+        inf.work,
+        '--install',
+        '--json',
+      ],
+      { encoding: 'utf8', stdio: 'pipe' },
+    );
+  } catch (e) {
+    infThrew = true; // execFileSync 在非 0 退出时抛错 → 验证「失败非 0」
+    infOut = e.stdout || '';
+  }
+  check('[install] 安装失败时进程非 0 退出（不把失败当完成）', infThrew);
+  let infReport = null;
+  try {
+    infReport = JSON.parse(infOut);
+  } catch {
+    infReport = inf.report();
+  }
+  check(
+    '[install] report.install.ok=false 且带补救提示（approve-builds / 手动安装）',
+    infReport.install &&
+      infReport.install.ok === false &&
+      /approve-builds|手动安装/.test(infReport.install.hint || ''),
+  );
+  check(
+    '[install] 安装失败进 manual（含 stderr），但源文件改动已落盘',
+    /依赖安装失败/.test(infReport.manual.join('\n')) &&
+      /styledComponentsPlugin\(\)/.test(inf.read('modern.config.ts')),
+  );
+
   console.log(`\n结果：${pass} 通过 / ${fail} 失败`);
   if (fail > 0) process.exit(1);
   console.log('✅ feature-enable skill 验证通过');

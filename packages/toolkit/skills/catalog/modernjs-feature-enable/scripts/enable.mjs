@@ -685,15 +685,27 @@ function detectPackageManager(dir) {
 }
 function runInstall(dir) {
   const pm = detectPackageManager(dir);
+  // 用 --ignore-scripts：跳过 postinstall/native build，避免 pnpm 10/11 的 ERR_PNPM_IGNORED_BUILDS
+  // （build 脚本未批准）导致 install 直接失败——这也是 review 一直用的可稳定通过的命令。
   try {
-    execFileSync(pm, ['install'], {
+    execFileSync(pm, ['install', '--ignore-scripts'], {
       cwd: dir,
       stdio: 'pipe',
       encoding: 'utf8',
     });
-    return { pm, ok: true };
+    return {
+      pm,
+      ok: true,
+      note: `已用 ${pm} install --ignore-scripts（跳过 postinstall/native build；如需原生构建脚本可 \`${pm} approve-builds\` 批准后重装）`,
+    };
   } catch (e) {
-    return { pm, ok: false, error: String(e.message || e).slice(0, 300) };
+    const stderr = String(e.stderr || e.stdout || e.message || e).slice(0, 600);
+    return {
+      pm,
+      ok: false,
+      error: stderr,
+      hint: `请手动安装：${pm} install --ignore-scripts；若报 ERR_PNPM_IGNORED_BUILDS，先 \`${pm} approve-builds\` 批准 build 脚本后重装`,
+    };
   }
 }
 
@@ -750,12 +762,16 @@ function main() {
   let install = null;
   if (doInstall && changed.length) {
     install = runInstall(dir);
-    note(
-      install.ok ? changed : manual,
-      install.ok
-        ? `已用 ${install.pm} install 安装依赖（可直接 dev/build）`
-        : `${install.pm} install 失败，请手动安装：${install.error}`,
-    );
+    if (install.ok) {
+      note(changed, `${install.note}，可直接 modern dev/build`);
+    } else {
+      // 失败要诚实：记 manual（含 stderr + 补救命令），并让进程**非 0 退出**，不把「一步到位」报告成正常完成
+      note(
+        manual,
+        `依赖安装失败（${install.pm}）：${install.hint}\nstderr：${install.error}`,
+      );
+      process.exitCode = 1;
+    }
   }
 
   const catalogTier = FEATURE_CATALOG.find(f => f.key === feature)?.tier;
@@ -793,7 +809,7 @@ function main() {
       : feature === 'ssg'
         ? 'modern build 会预渲染为静态 HTML（可在 output.ssg 细化按入口/路由）'
         : feature === 'tailwindcss'
-          ? "记得 import './tailwind.css' 后再用 class"
+          ? "CSS 已自动接入 src/routes/layout（import '../tailwind.css'）；如需手动接入：src/routes 下用 '../tailwind.css'、src 根入口用 './tailwind.css'，之后即可用 class"
           : feature === 'server'
             ? 'server/modern.server.ts 为骨架，按需补 middlewares/renderMiddlewares'
             : '按对应 reference / checklist 完成后续配置';
