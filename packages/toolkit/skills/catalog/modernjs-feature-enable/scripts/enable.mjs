@@ -5,6 +5,7 @@
 // 其余功能见 references/other-features.md（manual checklist），后续逐个自动化。
 // CJS（module.exports/require）配置插入 require 绑定；插不进/定位不到一律进 manual，不写半成品。
 
+import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import {
@@ -564,6 +565,42 @@ function enableTailwind(dir) {
   );
 }
 
+// 自定义 Web Server 骨架（依据 guides/advanced-features/web-server.mdx）：可构建（字段都给空值/no-op），
+// 同时把 middlewares / renderMiddlewares / plugins / onError 都列出来 + 注释里给可直接抄的示例，方便用户填。
+const SERVER_SCAFFOLD = `import { defineServerConfig } from '@modern-js/server-runtime';
+
+// 示例（按需取消注释并修改；类型从 '@modern-js/server-runtime' 引入 { type MiddlewareHandler }）：
+//
+// 中间件 Middleware —— 作用于「接口 + 页面」请求前后，必须 await next() 才会继续：
+//   const requestTiming: MiddlewareHandler = async (c, next) => {
+//     const start = Date.now();
+//     await next();
+//     c.res.headers.set('server-timing', \`total; dur=\${Date.now() - start}\`);
+//   };
+//
+// 渲染中间件 RenderMiddleware —— 只在页面渲染前后执行（可读取/改写 HTML 响应）：
+//   const renderTiming: MiddlewareHandler = async (c, next) => {
+//     await next();
+//     const html = await c.res.text();
+//     c.res = c.body(html, { status: c.res.status, headers: c.res.headers });
+//   };
+
+export default defineServerConfig({
+  middlewares: [
+    // { name: 'request-timing', handler: requestTiming }, // 接口+页面请求中间件
+  ],
+  renderMiddlewares: [
+    // { name: 'render-timing', handler: renderTiming }, // 仅页面渲染中间件
+  ],
+  plugins: [], // 服务端插件（插件内可再定义 middlewares / renderMiddlewares）
+  onError: () => {
+    // 统一错误处理，签名 (err, c) => Response | void，例如：
+    //   console.error(err);
+    //   return c.text('Internal Error', 500);
+  },
+});
+`;
+
 // 自定义 Web Server：可生成可构建骨架（server-runtime + server/modern.server.ts + tsconfig include），
 // 但业务 middleware/render 语义需人工补（不声称已迁好）。幂等：已有 modern.server 不覆盖。
 function enableServer(dir) {
@@ -576,13 +613,10 @@ function enableServer(dir) {
     note(manual, `已存在 ${path.relative(dir, existing)}：未覆盖（幂等）`);
   } else {
     fs.mkdirSync(serverDir, { recursive: true });
-    fs.writeFileSync(
-      path.join(serverDir, 'modern.server.ts'),
-      "import { defineServerConfig } from '@modern-js/server-runtime';\n\n// 自定义 Web Server 骨架（可构建）。按需添加 middlewares / renderMiddlewares。\n// 业务中间件与渲染逻辑需人工补全，见 references/other-features.md 与 guides/upgrade/web-server。\nexport default defineServerConfig({});\n",
-    );
+    fs.writeFileSync(path.join(serverDir, 'modern.server.ts'), SERVER_SCAFFOLD);
     note(
       changed,
-      '生成 server/modern.server.ts（可构建骨架，空 defineServerConfig）',
+      '生成 server/modern.server.ts（可构建骨架 + middlewares/renderMiddlewares/plugins/onError 示例注释）',
     );
   }
   ensureTsconfigInclude(dir, 'server');
@@ -639,8 +673,29 @@ const FEATURES = {
     run: enableTailwind,
     label: 'Tailwind CSS（v3，Rsbuild 原生）',
   },
-  server: { run: enableServer, label: '自定义 Web Server（骨架）' },
+  server: { run: enableServer, label: '自定义 Web Server' },
 };
+
+// 按 lockfile 选包管理器（默认 pnpm）。--install 显式触发才装；不无条件默认（install 改 lockfile/耗时/依赖网络）。
+function detectPackageManager(dir) {
+  if (fs.existsSync(path.join(dir, 'pnpm-lock.yaml'))) return 'pnpm';
+  if (fs.existsSync(path.join(dir, 'yarn.lock'))) return 'yarn';
+  if (fs.existsSync(path.join(dir, 'package-lock.json'))) return 'npm';
+  return 'pnpm';
+}
+function runInstall(dir) {
+  const pm = detectPackageManager(dir);
+  try {
+    execFileSync(pm, ['install'], {
+      cwd: dir,
+      stdio: 'pipe',
+      encoding: 'utf8',
+    });
+    return { pm, ok: true };
+  } catch (e) {
+    return { pm, ok: false, error: String(e.message || e).slice(0, 300) };
+  }
+}
 
 function main() {
   const args = process.argv.slice(2);
@@ -648,6 +703,7 @@ function main() {
   const feature = positional[0];
   const dir = path.resolve(positional[1] || '.');
   const json = args.includes('--json');
+  const doInstall = args.includes('--install');
 
   const plan = MANUAL_PLANS[feature];
   if (!feature || !(FEATURES[feature] || plan)) {
@@ -689,6 +745,19 @@ function main() {
     plan.checklist.forEach((c, i) => note(manual, `  [${i + 1}] ${c}`));
   }
 
+  // --install（显式触发才装；不无条件默认——install 改 lockfile/耗时/依赖网络）。
+  // 未带 --install 时不记 manual（install 命令已在末尾「下一步」提示里），保持自动迁移项干净。
+  let install = null;
+  if (doInstall && changed.length) {
+    install = runInstall(dir);
+    note(
+      install.ok ? changed : manual,
+      install.ok
+        ? `已用 ${install.pm} install 安装依赖（可直接 dev/build）`
+        : `${install.pm} install 失败，请手动安装：${install.error}`,
+    );
+  }
+
   const catalogTier = FEATURE_CATALOG.find(f => f.key === feature)?.tier;
   const report = {
     projectDir: dir,
@@ -697,6 +766,7 @@ function main() {
     // tier 来自能力矩阵：auto（完整启用）/ scaffold（骨架已生成 + 语义待人工，非完整）/ manual（仅 checklist）
     tier: catalogTier || (FEATURES[feature] ? 'auto' : 'manual'),
     complete: catalogTier === 'auto',
+    install,
     changed,
     manual,
     deprecated: DEPRECATED,
@@ -727,8 +797,11 @@ function main() {
           : feature === 'server'
             ? 'server/modern.server.ts 为骨架，按需补 middlewares/renderMiddlewares'
             : '按对应 reference / checklist 完成后续配置';
+  const installStep = install?.ok
+    ? `依赖已装（${install.pm}）→ 直接 modern dev/build`
+    : 'pnpm install → modern dev/build';
   console.log(
-    `\n下一步：pnpm install → modern dev/build；${nextHint}。报告见 .agents/runs/modernjs-feature-enable/report.json`,
+    `\n下一步：${installStep}；${nextHint}。报告见 .agents/runs/modernjs-feature-enable/report.json`,
   );
 }
 

@@ -699,16 +699,12 @@ export const FEATURE_CATALOG = [
   },
   {
     key: 'server',
-    label: '自定义 Web Server（骨架）',
+    label: '自定义 Web Server',
     tier: 'scaffold',
     doc: 'references/other-features.md',
   },
-  {
-    key: 'microFrontend',
-    label: '微前端（Module Federation / masterApp）',
-    tier: 'manual',
-    doc: 'references/other-features.md',
-  },
+  // 微前端不在本矩阵的「可启用项」里（v3 无 plugin-garfish，是 module federation / masterApp 的架构决策）。
+  // 仍保留能力知识：references/other-features.md 有说明，enable.mjs microFrontend 会给独立方案指引（非静默缺失）。
 ];
 
 export const TIER_LABEL = {

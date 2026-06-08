@@ -76,11 +76,14 @@ try {
   check('scan 判定 v3', /\(v3\)/.test(scanOut));
   check('scan: bff 在能力矩阵且未启用', /bff（.*）：未启用/.test(scanOut));
   check(
-    'scan: 能力矩阵含 server/tailwindcss/microFrontend（不再只 bff/ssg）',
+    'scan: 能力矩阵含 server/tailwindcss/styled-components（不再只 bff/ssg）',
     /server（/.test(scanOut) &&
       /tailwindcss（/.test(scanOut) &&
-      /microFrontend（/.test(scanOut) &&
       /styled-components（/.test(scanOut),
+  );
+  check(
+    'scan: microFrontend 不在「可启用项」矩阵里（按张翔反馈移除）',
+    !/microFrontend（/.test(scanOut),
   );
 
   execFileSync('node', [path.join(SCRIPTS, 'enable.mjs'), 'bff', a.work], {
@@ -147,6 +150,10 @@ try {
   check(
     'report.manual 为空（干净 v3 app 可全自动）',
     report.manual.length === 0,
+  );
+  check(
+    '默认不带 --install：report.install 为 null（install 不无条件默认）',
+    report.install === null || report.install === undefined,
   );
 
   // ===== 幂等：再次 enable 不重复改写 =====
@@ -678,13 +685,25 @@ try {
   execFileSync('node', [path.join(SCRIPTS, 'enable.mjs'), 'server', sv.work], {
     encoding: 'utf8',
   });
+  const svServer = sv.has('server/modern.server.ts')
+    ? sv.read('server/modern.server.ts')
+    : '';
   check(
-    'server: 加 @modern-js/server-runtime + 生成可构建 modern.server.ts 骨架',
+    'server: 加 @modern-js/server-runtime + modern.server.ts 含 middlewares/renderMiddlewares/plugins/onError 字段',
     JSON.parse(sv.read('package.json')).dependencies[
       '@modern-js/server-runtime'
     ] &&
-      sv.has('server/modern.server.ts') &&
-      /defineServerConfig\(\{\}\)/.test(sv.read('server/modern.server.ts')),
+      /defineServerConfig\(\{/.test(svServer) &&
+      /middlewares:/.test(svServer) &&
+      /renderMiddlewares:/.test(svServer) &&
+      /plugins:/.test(svServer) &&
+      /onError:/.test(svServer),
+  );
+  check(
+    'server: 骨架仍可 build（示例都在注释里，字段给空数组/no-op，无半成品 handler 引用）',
+    !/handler:\s*requestTiming|handler:\s*renderTiming/.test(
+      svServer.replace(/\/\/[^\n]*/g, ''),
+    ),
   );
   check(
     'server: 业务语义进 manual（不声称已迁好）',

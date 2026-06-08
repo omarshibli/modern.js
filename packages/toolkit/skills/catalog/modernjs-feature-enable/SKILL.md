@@ -20,12 +20,11 @@ description: 在已有的 Modern.js 3.0 应用里启用可选功能（BFF、自�
 | 静态站点生成 SSG | `ssg` | ✅ 可自动启用 | `components/enable-ssg.mdx`、`configure/app/output/ssg.mdx` |
 | styled-components | `styled-components` | ✅ 可自动启用 | `cli/plugin-styled-components`、`plugin/official/cli-plugins/plugin-styled-components.mdx` |
 | Tailwind CSS（v3） | `tailwindcss` | 🛠 脚手架（骨架自动 + 语义人工） | `guides/basic-features/css/tailwindcss.mdx`（Rsbuild 原生，非 @modern-js 插件） |
-| 自定义 Web Server | `server` | 🛠 脚手架（骨架自动 + 语义人工） | `guides/upgrade/web-server`、`@modern-js/server-runtime` |
-| 微前端 | `microFrontend` | 📝 需架构决策（输出 checklist） | `components/micro-frontend.mdx`（v3 无 plugin-garfish，按 module federation / masterApp 决策） |
+| 自定义 Web Server | `server` | 🛠 脚手架（骨架自动 + 语义人工） | `guides/advanced-features/web-server.mdx`、`@modern-js/server-runtime` |
 
 > ✅ 可自动启用 = 装依赖 + modern.config 插件 + 必要文件，全自动闭环。
-> 🛠 脚手架 = 自动生成可构建骨架 + 依赖/配置，但业务语义（server middleware / tailwind 的 CSS 接入与 v3·v4 选择）需人工补，report 会写清。
-> 📝 需架构决策 = v3 无足够源码/文档依据自动化，`enable.mjs` 仍可执行并输出**可执行 checklist + 原因**，不会让用户以为「没这功能」。
+> 🛠 脚手架 = 自动生成可构建骨架（server/modern.server.ts 含 middlewares/renderMiddlewares/plugins/onError 字段 + 示例注释；tailwind 的 config/postcss/css）+ 依赖，但业务语义（server 中间件逻辑、tailwind 的 CSS 接入与 v3·v4 选择）需人工补，report 会写清。
+> **微前端不在本矩阵的「可启用项」里**（v3 无 plugin-garfish，是 Module Federation / `masterApp` 架构决策）；它仍是 Modern.js 能力，`enable.mjs microFrontend` 会输出独立方案的可执行 checklist，详见 `references/other-features.md`，不会让用户以为「没这功能」。
 
 ## 执行步骤
 
@@ -38,6 +37,14 @@ node scripts/scan.mjs <projectDir>
 产出 `context.json`：判定是否 v3（v2 项目先用 `modernjs-migrate-to-v3` 升级）、列出各功能当前是否已启用、是否支持自动化。
 
 ### 步骤 2：启用功能
+
+> **执行纪律（重要）**：用户一旦明确「启用 X / enable X」，**立即直接运行** `node scripts/enable.mjs X <projectDir>`，
+> 不要只描述将要做什么、不要等二次确认、不要停在「我会执行…」就没动作。一条命令就改完源文件。
+>
+> **一步到位（依赖自动安装）**：默认带 `--install`，启用完直接可 `modern dev/build`，不用用户再手动装依赖：
+> `node scripts/enable.mjs X <projectDir> --install`。
+> **但**遇到以下情况**先不要带 `--install`**（只跑 enable，把 install 命令告诉用户）：工作区有**未提交的
+> lockfile 改动**、**离线/无法联网**、或包管理器不明确——因为 install 会改 lockfile、耗时、依赖网络。
 
 **BFF（自动化）**：
 

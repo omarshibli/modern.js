@@ -32,12 +32,19 @@ v3 **不再使用 `@modern-js/plugin-tailwindcss`**，改为 Rsbuild 原生方�
 
 > 若项目是从 v2 迁移来的、仍有 `@modern-js/plugin-tailwindcss`，用 `modernjs-migrate-to-v3` 处理。
 
-## 微前端 / Garfish（`microFrontend`）
+## 微前端（`microFrontend`）—— 不是本 skill 的当前启用项
 
-依据 `packages/document/docs/zh/components/micro-frontend.mdx` 及微前端指南。该能力依赖 Garfish 相关插件
-（`@modern-js/plugin-garfish`，不在本仓库 monorepo 内），主从应用配置项较多：请**以当前微前端文档为准**确认
-插件名、`masterApp` / 子应用导出等配置后再启用，不要凭记忆配置。
+**微前端不在 scan 的「可启用项」能力矩阵里**。原因：v3 已无 `@modern-js/plugin-garfish`，微前端是
+**Module Federation / `masterApp` 主从拓扑的架构决策**（基座、子应用清单、路由分发），自动化会改坏语义。
+它仍是 Modern.js 的能力，只是需**按独立架构方案**处理：
+
+- 依据 `components/micro-frontend.mdx`、`micro-master-manifest-config.mdx`、`micro-runtime-config.mdx`
+  选择 Module Federation / 运行时方案；
+- 主应用在 `src/modern.runtime.ts` 配 `masterApp`（apps 列表）；子应用暴露入口 + 配置 manifest。
+
+（`node scripts/enable.mjs microFrontend` 仍会输出上述可执行 checklist + 原因，不静默缺失。）
 
 ---
 
-> 以上能力会随 BFF 闭环验证通过后逐个补成 `scripts/enable.mjs` 的自动化分支 + tests/skill 断言。
+> 现状：`bff` / `ssg` / `styled-components` 已自动化（auto）；`tailwindcss` / `server` 为脚手架（scaffold，
+> 骨架自动 + 语义人工）。详见 `node scripts/scan.mjs` 的能力矩阵。
